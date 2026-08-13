@@ -28,3 +28,12 @@ pydantic-settings==2.15.0
 SQLAlchemy[asyncio]==2.0.52
 asyncpg==0.31.0
 greenlet==3.5.5          # required by the SQLAlchemy asyncio bridge
+alembic==1.19.1
+
+# --- auth ---
+# pwdlib over passlib: passlib 1.7.4 is unmaintained and breaks on new Python
+# and bcrypt releases. pwdlib is what FastAPI's own docs now recommend.
+pwdlib[argon2]==0.3.1
+# PyJWT only. Never add python-jose alongside it — two JWT libraries in one
+# project means two validation code paths and eventually one that is wrong.
+PyJWT==2.13.0

@@ -85,5 +85,11 @@ testpaths = ["tests"]
 # functions need no @pytest.mark.asyncio decorator; the session-scoped loop
 # stops each test from getting a fresh loop that invalidates the DB pool.
 asyncio_mode = "auto"
+# BOTH scopes must be "session". The async engine is created at import time and
+# its pooled asyncpg connections bind to whichever loop first touches them. If
+# fixtures run in a session loop while tests get a fresh per-function loop, any
+# query raises "Future attached to a different loop". Setting only the fixture
+# scope — the common half-fix — leaves exactly that mismatch in place.
 asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 addopts = "-ra --strict-markers"

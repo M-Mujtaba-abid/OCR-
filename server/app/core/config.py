@@ -6,11 +6,13 @@ value has a declared type and a single definition.
 
 from __future__ import annotations
 
+import secrets
 from functools import lru_cache
+from typing import Annotated, Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Query params that libpq/psycopg understand but asyncpg does NOT. Neon hands
 # you a libpq-flavoured URL containing these; passing them through makes
@@ -35,15 +37,83 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    PROJECT_NAME: str = "AP Invoice Automation API"
-    ENVIRONMENT: str = "local"
+    PROJECT_NAME: str = "OCR API"
+    API_V1_PREFIX: str = "/api/v1"
+    ENVIRONMENT: Literal["development", "staging", "production"] = "development"
     DEBUG: bool = True
 
     # SecretStr so an accidental print(settings) or a logged traceback cannot
     # leak the database password.
     DATABASE_URL: SecretStr
 
-    CORS_ORIGINS: list[str] = ["http://localhost:3000"]
+    # NoDecode stops pydantic-settings from json.loads()-ing the raw env string
+    # before the validator runs, which is what lets `A,B` work as well as JSON.
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+
+    # ---------------------------------------------------------------- JWT
+    # Generated per-process if unset so development works out of the box. A
+    # random default is a deliberate choice over a fixed placeholder: it makes
+    # tokens stop working across restarts, which is annoying enough to notice
+    # in development and impossible to accidentally ship as a real secret.
+    # The model_validator below hard-fails if it is missing in production.
+    JWT_SECRET_KEY: SecretStr = Field(
+        default_factory=lambda: SecretStr(secrets.token_urlsafe(64))
+    )
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+
+    # ---------------------------------------------------------------- cookies
+    AUTH_COOKIE_NAME: str = "refresh_token"
+    # Must be True in production — a refresh token sent over plain HTTP is
+    # readable by anyone on the network path.
+    AUTH_COOKIE_SECURE: bool = False
+    AUTH_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
+    # Scoping the cookie to the auth routes means it is not attached to every
+    # ordinary API call, which shrinks its exposure considerably.
+    AUTH_COOKIE_PATH: str = "/api/v1/auth"
+    AUTH_COOKIE_DOMAIN: str | None = None
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _parse_cors(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("["):  # JSON array form
+                import json
+
+                return list(json.loads(v))
+            return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
+        return [str(origin) for origin in v]
+
+    @model_validator(mode="after")
+    def _enforce_production_safety(self) -> "Settings":
+        """Fail fast on insecure production configuration.
+
+        Catching this at startup is the difference between a deploy that
+        refuses to boot and one that silently serves refresh tokens over
+        cleartext for a month.
+        """
+        if self.ENVIRONMENT != "production":
+            return self
+
+        problems: list[str] = []
+        if not self.model_fields_set.intersection({"JWT_SECRET_KEY"}):
+            problems.append("JWT_SECRET_KEY must be set explicitly in production")
+        if len(self.JWT_SECRET_KEY.get_secret_value()) < 32:
+            problems.append("JWT_SECRET_KEY must be at least 32 characters")
+        if not self.AUTH_COOKIE_SECURE:
+            problems.append("AUTH_COOKIE_SECURE must be true in production")
+        if self.AUTH_COOKIE_SAMESITE == "none" and not self.AUTH_COOKIE_SECURE:
+            problems.append("SameSite=none requires Secure cookies")
+        if self.DEBUG:
+            problems.append("DEBUG must be false in production")
+
+        if problems:
+            raise ValueError(
+                "Unsafe production configuration:\n  - " + "\n  - ".join(problems)
+            )
+        return self
 
     @property
     def async_dsn(self) -> str:
