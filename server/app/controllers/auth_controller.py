@@ -13,6 +13,7 @@ import datetime as dt
 from fastapi import Request, Response
 
 from app.core.config import settings
+from app.dependencies.auth import user_permissions
 from app.lib.responses import ApiResponse
 from app.models.user import User
 from app.schemas.auth import (
@@ -170,6 +171,19 @@ class AuthController:
     async def me(self, user: User) -> ApiResponse[UserRead]:
         return ApiResponse.ok(
             data=UserRead.model_validate(user), message="Current user fetched"
+        )
+
+    async def permissions(self, user: User) -> ApiResponse[list[str]]:
+        """The caller's effective permissions.
+
+        Exists so the frontend can decide what to *show* without hard-coding a
+        second copy of ROLE_PERMISSIONS that silently drifts from this one.
+        It is a UX aid and nothing more — the frontend is told what it may see,
+        never trusted about what it may do. Every route still enforces its own
+        permission server-side.
+        """
+        return ApiResponse.ok(
+            data=sorted(user_permissions(user)), message="Permissions fetched"
         )
 
     async def sessions(self, user: User) -> ApiResponse[list[SessionRead]]:

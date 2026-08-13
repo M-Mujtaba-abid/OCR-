@@ -4,14 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/hooks/useAuth";
-
-const NAV_LINKS = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/profile", label: "Profile" },
-  { href: "/settings", label: "Settings" },
-] as const;
+import { ROLE_LABEL, homePathFor, navLinksFor } from "@/lib/auth/roles";
 
 export function Header() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -23,20 +19,24 @@ export function Header() {
   if (!isAuthenticated || !user) return null;
 
   const displayName = user.full_name?.trim() || user.email;
+  // Role-filtered, so a member never sees an Admin link they cannot open.
+  // Hiding it is courtesy; /admin's layout and the API are what enforce it.
+  const navLinks = navLinksFor(user);
+  const homeHref = homePathFor(user);
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
       <div className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
         <div className="flex items-center gap-8">
           <Link
-            href="/dashboard"
+            href={homeHref}
             className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white"
           >
             OCR
           </Link>
 
           <nav aria-label="Main" className="hidden items-center gap-1 sm:flex">
-            {NAV_LINKS.map((link) => {
+            {navLinks.map((link) => {
               const active = pathname === link.href;
               return (
                 <Link
@@ -64,6 +64,12 @@ export function Header() {
           >
             {displayName}
           </span>
+          {/* Shown so it is never ambiguous which account is active — the
+              difference between the member and admin views is otherwise only
+              visible once you are already on a page. */}
+          <Badge tone={user.role === "admin" ? "accent" : "neutral"}>
+            {ROLE_LABEL[user.role]}
+          </Badge>
           <Button variant="secondary" onClick={() => void logout()}>
             Logout
           </Button>
@@ -89,7 +95,7 @@ export function Header() {
           className="border-t border-slate-200 bg-white px-4 py-3 sm:hidden dark:border-slate-800 dark:bg-slate-950"
         >
           <nav aria-label="Mobile" className="flex flex-col gap-1">
-            {NAV_LINKS.map((link) => (
+            {navLinks.map((link) => (
               <Link
                 key={link.href}
                 href={link.href}
@@ -101,9 +107,14 @@ export function Header() {
             ))}
           </nav>
           <div className="mt-3 border-t border-slate-200 pt-3 dark:border-slate-800">
-            <p className="truncate px-3 pb-2 text-sm text-slate-600 dark:text-slate-400">
-              {displayName}
-            </p>
+            <div className="flex items-center gap-2 px-3 pb-2">
+              <p className="truncate text-sm text-slate-600 dark:text-slate-400">
+                {displayName}
+              </p>
+              <Badge tone={user.role === "admin" ? "accent" : "neutral"}>
+                {ROLE_LABEL[user.role]}
+              </Badge>
+            </div>
             <Button variant="secondary" fullWidth onClick={() => void logout()}>
               Logout
             </Button>

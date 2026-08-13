@@ -49,3 +49,26 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     full_name: str | None = Field(default=None, max_length=255)
     email: EmailStr | None = None
+
+
+class UserRoleUpdate(BaseModel):
+    """Body for PATCH /users/{id}/role.
+
+    A dedicated single-field model rather than reusing UserUpdate: role is a
+    privilege change, and letting it ride along inside a general profile update
+    is how a "edit your own name" endpoint quietly becomes privilege escalation.
+    """
+
+    role: UserRole
+
+
+class UserStats(BaseModel):
+    """Aggregate counts for the admin dashboard."""
+
+    total: int
+    active: int
+    inactive: int
+    verified: int
+    # Keys serialise as the enum's value ("member"/"manager"/"admin") because
+    # UserRole subclasses str. Every role is always present, zero-filled.
+    by_role: dict[UserRole, int]

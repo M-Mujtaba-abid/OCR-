@@ -24,6 +24,27 @@ export interface User {
   updated_at: string;
 }
 
+/**
+ * Permission strings from the backend's ROLE_PERMISSIONS table
+ * (server/app/dependencies/auth.py).
+ *
+ * This is a TYPE only — the role→permission mapping itself is never copied
+ * here. The actual list for the current user arrives from
+ * GET /auth/permissions, so the mapping has exactly one definition.
+ */
+export type Permission =
+  | "user.read.self"
+  | "user.update.self"
+  | "user.read"
+  | "user.create"
+  | "user.update"
+  | "user.delete"
+  | "invoice.read"
+  | "invoice.create"
+  | "invoice.approve"
+  | "invoice.delete"
+  | "system.admin";
+
 /** Every successful response is wrapped in this envelope. */
 export interface ApiEnvelope<T> {
   success: true;
@@ -76,6 +97,31 @@ export interface AuthSession {
 }
 
 /* -------------------------------------------------------------------------
+ * Admin — GET /users, GET /users/stats
+ * ---------------------------------------------------------------------- */
+
+export interface Pagination {
+  page: number;
+  page_size: number;
+  total: number;
+  pages: number;
+}
+
+export interface Paginated<T> {
+  items: T[];
+  pagination: Pagination;
+}
+
+export interface UserStats {
+  total: number;
+  active: number;
+  inactive: number;
+  verified: number;
+  /** Zero-filled by the backend, so every role is always a key. */
+  by_role: Record<UserRole, number>;
+}
+
+/* -------------------------------------------------------------------------
  * Requests
  * ---------------------------------------------------------------------- */
 
@@ -123,6 +169,12 @@ export interface AuthContextValue {
   accessToken: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  /** Effective permissions, fetched from the backend. Empty when signed out. */
+  permissions: Permission[];
+  /** True only if the user holds EVERY listed permission. */
+  can: (...required: Permission[]) => boolean;
+  /** The route this user's role lands on. `/login` when signed out. */
+  homePath: string;
   login: (credentials: LoginRequest) => Promise<User>;
   register: (payload: RegisterRequest) => Promise<User>;
   logout: () => Promise<void>;

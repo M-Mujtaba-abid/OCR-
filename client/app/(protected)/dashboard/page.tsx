@@ -1,20 +1,33 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 
 import { Alert } from "@/components/ui/Alert";
+import { Badge, Field } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/hooks/useAuth";
+import { ROLE_DESCRIPTION, ROLE_LABEL, isAdmin } from "@/lib/auth/roles";
 
+/**
+ * The member / manager dashboard.
+ *
+ * Admins land on /admin instead, but this page is deliberately still reachable
+ * by them — an admin is also a user with an account, and hiding their own
+ * profile behind a role check would be arbitrary. What changes by role is the
+ * DEFAULT destination and which capability sections appear, not whether the
+ * page exists.
+ */
 export default function DashboardPage() {
-  const { user, logout, logoutAll } = useAuth();
+  const { user, can, logout, logoutAll } = useAuth();
   const [busy, setBusy] = useState<"logout" | "logout-all" | null>(null);
 
-  // The protected layout guarantees a user, but narrowing satisfies TypeScript
+  // The protected layout guarantees a user; narrowing satisfies TypeScript
   // without a non-null assertion.
   if (!user) return null;
 
   const displayName = user.full_name?.trim() || user.email;
+  const canApprove = can("invoice.approve");
 
   async function handle(action: "logout" | "logout-all") {
     setBusy(action);
@@ -27,15 +40,66 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">
-          Welcome, {displayName}
-        </h1>
+      <header>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">
+            Welcome, {displayName}
+          </h1>
+          <Badge tone={user.role === "manager" ? "warning" : "neutral"}>
+            {ROLE_LABEL[user.role]}
+          </Badge>
+        </div>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Here&apos;s your account overview.
+          {ROLE_DESCRIPTION[user.role]}
         </p>
-      </div>
+      </header>
 
+
+      {isAdmin(user) && (
+        <Alert variant="info">
+          You&apos;re an administrator.{" "}
+          <Link href="/admin" className="font-medium underline underline-offset-4">
+            Go to the admin console
+          </Link>{" "}
+          to manage users and roles.
+        </Alert>
+      )}
+
+      {/* --------------------------------------------------------- capabilities */}
+      {/* <section
+        aria-labelledby="capabilities-heading"
+        className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
+      >
+        <h2
+          id="capabilities-heading"
+          className="text-sm font-semibold text-slate-900 dark:text-white"
+        >
+          What you can do
+        </h2>
+        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+          Granted by your role. The server enforces these independently.
+        </p>
+
+        <ul className="mt-4 space-y-2 text-sm">
+          <Capability granted={can("invoice.create")}>Upload invoices</Capability>
+          <Capability granted={can("invoice.read")}>
+            View invoices and match results
+          </Capability>
+          <Capability granted={canApprove}>Approve or reject matches</Capability>
+          <Capability granted={can("user.read")}>View the user directory</Capability>
+          <Capability granted={can("user.update")}>
+            Manage user roles and access
+          </Capability>
+        </ul>
+
+        {!canApprove && (
+          <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
+            Approvals are handled by a manager or administrator.
+          </p>
+        )}
+      </section> */}
+
+      {/* --------------------------------------------------------------- account */}
       <section
         aria-labelledby="account-heading"
         className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
@@ -50,7 +114,10 @@ export default function DashboardPage() {
         <dl className="mt-4 grid gap-4 sm:grid-cols-2">
           <Field label="Email" value={user.email} />
           <Field label="Name" value={user.full_name ?? "—"} />
-          <Field label="Role" value={<Badge tone="neutral">{user.role}</Badge>} />
+          <Field
+            label="Role"
+            value={<Badge>{ROLE_LABEL[user.role]}</Badge>}
+          />
           <Field
             label="Account status"
             value={
@@ -74,6 +141,7 @@ export default function DashboardPage() {
         </dl>
       </section>
 
+      {/* -------------------------------------------------------------- sessions */}
       <section
         aria-labelledby="sessions-heading"
         className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
@@ -119,40 +187,35 @@ export default function DashboardPage() {
   );
 }
 
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {label}
-      </dt>
-      <dd className="mt-1 text-sm text-slate-900 dark:text-slate-100">{value}</dd>
-    </div>
-  );
-}
-
-function Badge({
-  tone,
+function Capability({
+  granted,
   children,
 }: {
-  tone: "positive" | "negative" | "warning" | "neutral";
+  granted: boolean;
   children: React.ReactNode;
 }) {
-  const tones: Record<typeof tone, string> = {
-    positive:
-      "bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-400/20",
-    negative:
-      "bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-950 dark:text-red-300 dark:ring-red-400/20",
-    warning:
-      "bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-400/20",
-    neutral:
-      "bg-slate-100 text-slate-700 ring-slate-500/20 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-400/20",
-  };
-
   return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ring-1 ring-inset ${tones[tone]}`}
-    >
-      {children}
-    </span>
+    <li className="flex items-start gap-2.5">
+      <span
+        aria-hidden="true"
+        className={
+          granted
+            ? "mt-0.5 text-emerald-600 dark:text-emerald-400"
+            : "mt-0.5 text-slate-400 dark:text-slate-600"
+        }
+      >
+        {granted ? "✓" : "✕"}
+      </span>
+      <span
+        className={
+          granted
+            ? "text-slate-900 dark:text-slate-100"
+            : "text-slate-500 line-through dark:text-slate-500"
+        }
+      >
+        {children}
+      </span>
+      <span className="sr-only">{granted ? "(allowed)" : "(not allowed)"}</span>
+    </li>
   );
 }

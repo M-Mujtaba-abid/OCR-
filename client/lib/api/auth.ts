@@ -13,6 +13,7 @@ import type {
   LoginData,
   LoginRequest,
   LogoutData,
+  Permission,
   RegisterRequest,
   TokenData,
   User,
@@ -69,6 +70,16 @@ export function logoutAll(): Promise<LogoutData> {
 /** The authenticated user. */
 export function getMe(): Promise<User> {
   return api.get<User>("/auth/me");
+}
+
+/**
+ * The current user's effective permissions.
+ *
+ * Fetched rather than derived from `user.role`, so the role→permission mapping
+ * exists only in the backend and cannot drift.
+ */
+export function getPermissions(): Promise<Permission[]> {
+  return api.get<Permission[]>("/auth/permissions");
 }
 
 /** Active sessions/devices for the current user. */

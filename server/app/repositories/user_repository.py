@@ -82,11 +82,45 @@ class UserRepository:
         await self.db.delete(user)
         await self.db.flush()
 
-    async def list_users(self, *, limit: int = 50, offset: int = 0) -> list[User]:
-        stmt = (
-            select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    async def list_users(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        role: UserRole | None = None,
+    ) -> list[User]:
+        stmt = select(User).order_by(User.created_at.desc())
+        if role is not None:
+            stmt = stmt.where(User.role == role)
+        return list(
+            (await self.db.execute(stmt.limit(limit).offset(offset))).scalars().all()
         )
-        return list((await self.db.execute(stmt)).scalars().all())
 
-    async def count(self) -> int:
-        return int((await self.db.execute(select(func.count()).select_from(User))).scalar_one())
+    async def count(self, *, role: UserRole | None = None) -> int:
+        stmt = select(func.count()).select_from(User)
+        if role is not None:
+            stmt = stmt.where(User.role == role)
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def count_by_role(self) -> dict[UserRole, int]:
+        """One GROUP BY rather than three COUNTs.
+
+        Roles with no users are absent from the result — the caller fills the
+        gaps, because the repository should report what the database contains,
+        not what the enum happens to define.
+        """
+        stmt = select(User.role, func.count()).group_by(User.role)
+        return {role: int(total) for role, total in (await self.db.execute(stmt)).all()}
+
+    async def count_flags(self) -> tuple[int, int]:
+        """(active, verified) in a single round trip.
+
+        FILTER is the Postgres way to do conditional aggregation; SUM(CASE...)
+        would work too but reads worse and returns NULL on an empty table.
+        """
+        stmt = select(
+            func.count().filter(User.is_active.is_(True)),
+            func.count().filter(User.is_verified.is_(True)),
+        ).select_from(User)
+        active, verified = (await self.db.execute(stmt)).one()
+        return int(active or 0), int(verified or 0)

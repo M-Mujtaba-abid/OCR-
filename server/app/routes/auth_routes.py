@@ -142,6 +142,18 @@ async def me(user: CurrentActiveUser, controller: Controller) -> ApiResponse[Use
 
 
 @router.get(
+    "/permissions",
+    response_model=ApiResponse[list[str]],
+    summary="Permissions granted to the authenticated user",
+    responses=ERROR_RESPONSES,
+)
+async def permissions(
+    user: CurrentActiveUser, controller: Controller
+) -> ApiResponse[list[str]]:
+    return await controller.permissions(user)
+
+
+@router.get(
     "/sessions",
     response_model=ApiResponse[list[SessionRead]],
     summary="List active sessions for the current user",

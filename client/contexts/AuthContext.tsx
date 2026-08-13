@@ -24,9 +24,11 @@ import {
   setAccessToken,
   setSessionExpiredHandler,
 } from "@/lib/auth/token-store";
+import { homePathFor } from "@/lib/auth/roles";
 import type {
   AuthContextValue,
   LoginRequest,
+  Permission,
   RegisterRequest,
   User,
 } from "@/types/auth";
@@ -38,6 +40,7 @@ const PUBLIC_PATHS = ["/login", "/register"];
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<Permission[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   const router = useRouter();
@@ -61,6 +64,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearAccessToken();
     setToken(null);
     setUser(null);
+    // Cleared alongside the user. Leaving a stale permission list behind would
+    // let the next render briefly show admin controls to whoever signs in next.
+    setPermissions([]);
   }, []);
 
   /* ---------------------------------------------------------------------
@@ -79,10 +85,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         applyToken(tokens.access_token);
 
-        // Refresh returns no user object, so fetch it separately.
-        const me = await authApi.getMe();
+        // Refresh returns no user object, so fetch it separately. Permissions
+        // come from the backend too — in parallel, since neither depends on
+        // the other and a serial pair would double the time to first paint.
+        const [me, perms] = await Promise.all([
+          authApi.getMe(),
+          authApi.getPermissions(),
+        ]);
         if (cancelled) return;
         setUser(me);
+        setPermissions(perms);
       } catch {
         if (!cancelled) clearAuth();
       } finally {
@@ -123,6 +135,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const data = await authApi.login(credentials);
       applyToken(data.access_token);
       setUser(data.user); // login returns the user, so no extra /me call
+
+      // Permissions are fetched after the token is set, so the request is
+      // authenticated. A failure here is not a failed login — the user is
+      // signed in either way, they just see the least-privileged UI until the
+      // next page load. Throwing would strand them on the login form.
+      try {
+        setPermissions(await authApi.getPermissions());
+      } catch {
+        setPermissions([]);
+      }
+
       return data.user;
     },
     [applyToken],
@@ -162,9 +185,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearAuth, router]);
 
   const refreshUser = useCallback(async () => {
-    const me = await authApi.getMe();
+    // Re-fetches permissions too: this is what an admin calls after their own
+    // role is changed, and a stale permission list is precisely the bug that
+    // would leave behind.
+    const [me, perms] = await Promise.all([
+      authApi.getMe(),
+      authApi.getPermissions(),
+    ]);
     setUser(me);
+    setPermissions(perms);
   }, []);
+
+  const can = useCallback(
+    (...required: Permission[]) =>
+      required.every((permission) => permissions.includes(permission)),
+    [permissions],
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -172,13 +208,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       accessToken: token,
       isAuthenticated: Boolean(user),
       isLoading,
+      permissions,
+      can,
+      homePath: homePathFor(user),
       login,
       register,
       logout,
       logoutAll,
       refreshUser,
     }),
-    [user, token, isLoading, login, register, logout, logoutAll, refreshUser],
+    [
+      user,
+      token,
+      isLoading,
+      permissions,
+      can,
+      login,
+      register,
+      logout,
+      logoutAll,
+      refreshUser,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
