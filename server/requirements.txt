@@ -37,3 +37,17 @@ pwdlib[argon2]==0.3.1
 # PyJWT only. Never add python-jose alongside it — two JWT libraries in one
 # project means two validation code paths and eventually one that is wrong.
 PyJWT==2.13.0
+
+# --- object storage ---
+# Cloudflare R2 is S3-compatible, so the official AWS SDK is the client; there
+# is no R2-specific library worth taking. See app/core/storage.py for the three
+# R2-specific botocore settings that this version requires.
+#
+# Pure-Python wheels, so no toolchain is needed and no interpreter bump can
+# break them. Pulls in botocore, s3transfer, jmespath, python-dateutil, six.
+boto3==1.43.70
+
+# Multipart form parsing — required by FastAPI for UploadFile / Form(). Already
+# installed transitively by fastapi[standard], but pinned explicitly because
+# this project depends on it directly rather than incidentally.
+python-multipart==0.0.32

@@ -74,6 +74,31 @@ class Settings(BaseSettings):
     AUTH_COOKIE_PATH: str = "/api/v1/auth"
     AUTH_COOKIE_DOMAIN: str | None = None
 
+    # ---------------------------------------------------------------- storage
+    # Cloudflare R2 (S3-compatible object storage).
+    #
+    # All optional at boot, on purpose. The service must still start for an
+    # engineer working on auth who has no R2 account; the storage layer raises
+    # StorageNotConfiguredError (503) on first use instead. See the note in
+    # `_enforce_production_safety` about promoting this to a boot-time failure.
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: SecretStr = SecretStr("")
+    R2_SECRET_ACCESS_KEY: SecretStr = SecretStr("")
+    R2_BUCKET_NAME: str = "ap-invoices"
+
+    # Custom domain or r2.dev URL for public reads. Leave blank for a private
+    # bucket — objects are then reachable only through a presigned URL.
+    R2_PUBLIC_URL: str = ""
+
+    UPLOAD_MAX_SIZE_MB: int = Field(default=10, ge=1, le=200)
+
+    @field_validator("R2_PUBLIC_URL", "R2_ACCOUNT_ID", "R2_BUCKET_NAME", mode="after")
+    @classmethod
+    def _strip_value(cls, v: str) -> str:
+        # A trailing slash pasted from the Cloudflare dashboard would otherwise
+        # produce "https://files.example.com//invoices/...".
+        return v.strip().rstrip("/")
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _parse_cors(cls, v: Any) -> list[str]:
@@ -148,6 +173,26 @@ class Settings(BaseSettings):
         """Neon's pooled endpoint runs PgBouncer, which breaks asyncpg's
         prepared-statement cache. Detected here so session.py can disable it."""
         return "-pooler." in self.db_host
+
+    # ------------------------------------------------------------- storage
+    @property
+    def r2_endpoint_url(self) -> str:
+        """R2's S3 API endpoint. Note this is NOT the public read URL — it is
+        the authenticated control endpoint boto3 signs requests against."""
+        return f"https://{self.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+    @property
+    def is_storage_configured(self) -> bool:
+        return bool(
+            self.R2_ACCOUNT_ID
+            and self.R2_ACCESS_KEY_ID.get_secret_value()
+            and self.R2_SECRET_ACCESS_KEY.get_secret_value()
+            and self.R2_BUCKET_NAME
+        )
+
+    @property
+    def upload_max_size_bytes(self) -> int:
+        return self.UPLOAD_MAX_SIZE_MB * 1024 * 1024
 
 
 @lru_cache(maxsize=1)

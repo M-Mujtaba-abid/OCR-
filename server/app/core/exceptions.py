@@ -139,3 +139,44 @@ class EmailAlreadyRegisteredError(ConflictError):
 class UserNotFoundError(NotFoundError):
     code = "USER_NOT_FOUND"
     message = "User not found."
+
+
+# --------------------------------------------------------------------------
+# File upload / object storage
+# --------------------------------------------------------------------------
+class EmptyFileError(BadRequestError):
+    code = "EMPTY_FILE"
+    message = "The uploaded file is empty."
+
+
+class FileTooLargeError(AppError):
+    """413. Raised while streaming, before the whole body is buffered."""
+
+    status_code, code = 413, "FILE_TOO_LARGE"
+    message = "The uploaded file exceeds the maximum allowed size."
+
+
+class UnsupportedFileTypeError(AppError):
+    """415. Decided by content sniffing, not by the client's Content-Type."""
+
+    status_code, code = 415, "UNSUPPORTED_FILE_TYPE"
+    message = "Unsupported file type. Allowed: PDF, PNG, JPEG, TIFF."
+
+
+class StorageError(AppError):
+    """502. Object storage is a separate upstream service; when it fails the
+    fault is ours-to-them, not the client's, so this must never surface as a
+    400. Carries no provider detail — bucket names and keys are not the
+    client's business."""
+
+    status_code, code = 502, "STORAGE_ERROR"
+    message = "File storage is temporarily unavailable. Please try again."
+
+
+class StorageNotConfiguredError(AppError):
+    """503. The R2 credentials are absent. Deliberately distinct from
+    StorageError: this is a deployment mistake, not a transient outage, and
+    retrying will never fix it."""
+
+    status_code, code = 503, "STORAGE_NOT_CONFIGURED"
+    message = "File storage is not configured on this server."
