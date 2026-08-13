@@ -1,0 +1,30 @@
+# Runtime dependencies. Python 3.12 ONLY — see pyproject.toml [project].requires-python.
+#
+# Install with source builds forbidden, so a missing wheel fails loudly and
+# immediately instead of trying to invoke a C/Rust toolchain you don't have:
+#
+#     .\.venv\Scripts\python.exe -m pip install --only-binary=:all: -r requirements.txt
+
+# --- web framework ---
+# `standard-no-fastapi-cloud-cli` = the `standard` extra minus FastAPI Cloud's
+# CLI. That drops sentry-sdk, fastar and rignore, which are deployment tooling
+# the running service never imports. Two of those are Rust extensions, so this
+# also removes two chances of a build failure on any future interpreter bump.
+# Swap to fastapi[standard] locally if you want the `fastapi dev` CLI.
+fastapi[standard-no-fastapi-cloud-cli]==0.141.1
+
+# Pinned explicitly because we run uvicorn directly (`-m uvicorn`) rather than
+# through the fastapi CLI. [standard] adds httptools + watchfiles + websockets.
+uvicorn[standard]==0.52.1
+
+# NOTE: do NOT pin starlette. FastAPI already constrains it, and pinning it
+# yourself causes a resolver conflict on the next FastAPI bump.
+
+# --- validation & settings ---
+pydantic==2.13.4
+pydantic-settings==2.15.0
+
+# --- database (async) ---
+SQLAlchemy[asyncio]==2.0.52
+asyncpg==0.31.0
+greenlet==3.5.5          # required by the SQLAlchemy asyncio bridge

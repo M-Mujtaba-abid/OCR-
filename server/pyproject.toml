@@ -1,0 +1,89 @@
+[project]
+name = "ap-invoice-automation-api"
+version = "0.1.0"
+description = "Accounts Payable invoice-to-PO automation — FastAPI backend"
+readme = "../README.md"
+
+# The single most important line in this file.
+#
+# Python 3.15 is excluded deliberately, not accidentally. Wheels on PyPI are
+# built per interpreter ABI (cp312, cp313, ...). A brand-new interpreter has no
+# cp3XX wheels yet for compiled packages, so pip falls back to building from
+# source — which needs MSVC link.exe for C extensions (httptools, PyYAML) and a
+# Rust toolchain for pydantic-core, watchfiles, fastar and rignore.
+#
+# The fix is a supported interpreter, not a local compiler. With this bound in
+# place, `pip install` refuses to proceed on 3.15 with a clear message instead
+# of failing halfway through a build.
+requires-python = ">=3.12,<3.13"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["app"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linter + formatter (replaces flake8, isort, black)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort — import ordering
+    "N",        # pep8-naming
+    "UP",       # pyupgrade — keeps syntax modern for the target version
+    "B",        # flake8-bugbear — real bug patterns
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "ASYNC",    # flake8-async — catches blocking calls inside async def
+    "RUF",
+]
+ignore = [
+    "B008",  # function call in a default argument — this is how FastAPI
+             # Depends() works, so it is a false positive throughout.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]   # assert is the point of a test
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ---------------------------------------------------------------------------
+# mypy — static types
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+
+# Third-party packages without type stubs. Add here rather than weakening the
+# global settings above.
+[[tool.mypy.overrides]]
+module = ["asyncpg.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# pytest-asyncio 1.x removed the `event_loop` fixture. "auto" means async test
+# functions need no @pytest.mark.asyncio decorator; the session-scoped loop
+# stops each test from getting a fresh loop that invalidates the DB pool.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+addopts = "-ra --strict-markers"

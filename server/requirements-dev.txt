@@ -1,0 +1,14 @@
+# Development-only dependencies. Install both files locally:
+#     .\.venv\Scripts\python.exe -m pip install --only-binary=:all: -r requirements-dev.txt
+
+-r requirements.txt
+
+# --- tests ---
+pytest==9.1.1
+pytest-asyncio==1.4.0    # 1.x removed the `event_loop` fixture; config is in pyproject.toml
+pytest-cov==7.1.0
+httpx==0.28.1            # ASGITransport, for testing the app without a live server
+
+# --- lint & types ---
+ruff==0.16.2
+mypy==2.3.0
