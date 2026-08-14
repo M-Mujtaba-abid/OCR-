@@ -105,6 +105,9 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
     UserRole.MEMBER: {
         "user.read.self",
         "user.update.self",
+        # invoice.read is scoped to the caller's OWN uploads; reading anyone
+        # else's requires invoice.read.all. Two permissions rather than one
+        # because "can read invoices" is genuinely two different capabilities.
         "invoice.read",
         "invoice.create",
     },
@@ -113,6 +116,7 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "user.update.self",
         "user.read",
         "invoice.read",
+        "invoice.read.all",
         "invoice.create",
         "invoice.approve",
     },
@@ -124,6 +128,7 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "user.update",
         "user.delete",
         "invoice.read",
+        "invoice.read.all",
         "invoice.create",
         "invoice.approve",
         "invoice.delete",

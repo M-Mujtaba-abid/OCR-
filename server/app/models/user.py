@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Enum, Index, String
+from sqlalchemy import Boolean, Enum, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -30,7 +30,11 @@ class UserRole(str, enum.Enum):
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "users"
-    __table_args__ = (Index("ix_users_is_active", "is_active"),)
+    __table_args__ = (
+        Index("ix_users_is_active", "is_active"),
+        # The admin queue filters by role constantly ("show me all members").
+        Index("ix_users_role", "role"),
+    )
 
     # Always stored lowercased by UserRepository, so a plain unique constraint
     # is enough — no functional index, which Alembic cannot autogenerate.
@@ -64,6 +68,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_verified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+
+    # A member is usually a vendor. These cache which Odoo res.partner they
+    # are, so an uploaded invoice can be attributed without a lookup on every
+    # request. Plain integers, not FKs — that record lives in Odoo.
+    odoo_partner_id: Mapped[int | None] = mapped_column(Integer)
+    odoo_partner_name: Mapped[str | None] = mapped_column(String(255))
 
     sessions: Mapped[list["AuthSession"]] = relationship(
         back_populates="user",

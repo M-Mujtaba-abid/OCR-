@@ -7,7 +7,7 @@
  * tracked manually here — the browser does this automatically.
  */
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 const BASE = `${API}/api/v1`;
 const ORIGIN = "http://localhost:3000";
 
@@ -123,11 +123,10 @@ check("code is INVALID_TOKEN", badJwt.json?.error?.code === "INVALID_TOKEN");
 
 /* 5. concurrent refresh ------------------------------------------------ */
 console.log("\nCONCURRENT REFRESH");
-// Fires several refreshes with the SAME cookie at once — i.e. what the client
-// would do if it did NOT single-flight. This probes the BACKEND directly and
-// is diagnostic, not a frontend assertion: the client can never produce this
-// pattern because lib/api/client.ts collapses concurrent refreshes onto one
-// shared promise.
+// Fires several refreshes with the SAME cookie at once — what a client that did
+// NOT single-flight would do. This probes the BACKEND: exactly one may win,
+// because the alternative is several live sessions minted from one token, which
+// is the state rotation exists to prevent.
 const cookieBefore = cookie;
 const parallel = await Promise.all(
   [1, 2, 3, 4].map(() =>
@@ -140,21 +139,24 @@ const parallel = await Promise.all(
 const okCount = parallel.filter((r) => r.status === 200).length;
 console.log(`  4 parallel raw refreshes → ${okCount} succeeded, ${4 - okCount} rejected`);
 
-// Diagnostic only — deliberately NOT a pass/fail of the frontend.
-if (okCount > 1) {
-  console.log(
-    "  FINDING (backend)  Rotation is not atomic. Concurrent refreshes on one\n" +
-      "    token each read the session before any of them commits, so several\n" +
-      "    succeed and mint sibling sessions from a single token. Sequential\n" +
-      "    rotation is correct (verified below). Unreachable from this client,\n" +
-      "    which single-flights refreshes — but reachable by any other client.\n" +
-      "    Fix: SELECT ... FOR UPDATE on the session row, or a conditional\n" +
-      "    UPDATE ... WHERE revoked_at IS NULL and rotate only if rowcount = 1.",
-  );
-} else {
-  console.log("  PASS  backend serialises concurrent refreshes");
-  pass += 1;
-}
+check("exactly one concurrent refresh wins", okCount === 1, `${okCount} succeeded`);
+check(
+  "the losers are rejected as 401, not 500",
+  parallel.filter((r) => r.status !== 200).every((r) => r.status === 401),
+  parallel.map((r) => r.status).join(","),
+);
+check(
+  "a lost race is NOT reported as theft",
+  // A client that simply fired two refreshes at once has done nothing wrong,
+  // so it must not trigger the revoke-everything path.
+  parallel
+    .filter((r) => r.status === 401)
+    .every((r) => r.json?.error?.code !== "REFRESH_TOKEN_REUSED"),
+);
+
+// The winner's token must still work — losing siblings must not have poisoned it.
+const winner = parallel.find((r) => r.status === 200);
+check("the winner received a usable access token", Boolean(winner?.json?.data?.access_token));
 
 /* 6. sequential refresh + rotation ------------------------------------- */
 console.log("\nREFRESH ROTATION");

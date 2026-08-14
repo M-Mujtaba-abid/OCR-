@@ -102,6 +102,17 @@ class UserRepository:
             stmt = stmt.where(User.role == role)
         return int((await self.db.execute(stmt)).scalar_one())
 
+    async def list_ids_by_role(self, *roles: UserRole) -> list[uuid.UUID]:
+        """Ids only — used to fan a notification out to every admin.
+
+        Selecting the column rather than the entity avoids hydrating full User
+        objects that are immediately discarded.
+        """
+        stmt = select(User.id).where(
+            User.role.in_(roles), User.is_active.is_(True)
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
     async def count_by_role(self) -> dict[UserRole, int]:
         """One GROUP BY rather than three COUNTs.
 

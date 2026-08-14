@@ -180,3 +180,80 @@ class StorageNotConfiguredError(AppError):
 
     status_code, code = 503, "STORAGE_NOT_CONFIGURED"
     message = "File storage is not configured on this server."
+
+
+# --------------------------------------------------------------------------
+# OCR / AI extraction
+# --------------------------------------------------------------------------
+class OcrNotConfiguredError(AppError):
+    """503. No Mistral API key. A deployment mistake, not an outage."""
+
+    status_code, code = 503, "OCR_NOT_CONFIGURED"
+    message = "Document extraction is not configured on this server."
+
+
+class OcrError(AppError):
+    """502. Mistral failed or returned something unusable.
+
+    Never carries the provider's raw message: it can contain the signed URL of
+    the document, which is a credential for the duration of its TTL.
+    """
+
+    status_code, code = 502, "OCR_ERROR"
+    message = "Document extraction failed. Please try again."
+
+
+class ExtractionInvalidError(AppError):
+    """422. The model returned JSON that does not satisfy the schema.
+
+    Distinct from OcrError on purpose: the call succeeded and was billed, the
+    output is simply unusable. Retrying may well produce a valid result, but
+    the failure is about content rather than transport.
+    """
+
+    status_code, code = 422, "EXTRACTION_INVALID"
+    message = "The document could not be read into the expected format."
+
+
+# --------------------------------------------------------------------------
+# Odoo
+# --------------------------------------------------------------------------
+class OdooNotConfiguredError(AppError):
+    status_code, code = 503, "ODOO_NOT_CONFIGURED"
+    message = "Odoo is not configured on this server."
+
+
+class OdooAuthError(AppError):
+    """502, not 401. The caller's credentials are fine — OURS are wrong.
+
+    Returning 401 here would tell the user to sign in again for a problem no
+    action of theirs can fix.
+    """
+
+    status_code, code = 502, "ODOO_AUTH_ERROR"
+    message = "Could not authenticate with Odoo. Check the server credentials."
+
+
+class OdooError(AppError):
+    """502. Odoo is an upstream service; its faults are ours-to-them.
+
+    Carries no Odoo detail — a fault message can include the database name and
+    internal model paths, which are not the client's business.
+    """
+
+    status_code, code = 502, "ODOO_ERROR"
+    message = "Odoo is temporarily unavailable. Please try again."
+
+
+# --------------------------------------------------------------------------
+# Matching
+# --------------------------------------------------------------------------
+class InvoiceNotReadyError(AppError):
+    """409. The requested step needs an earlier one to have finished.
+
+    Matching before extraction has nothing to match on, so this is a conflict
+    with the row's current state rather than a bad request.
+    """
+
+    status_code, code = 409, "INVOICE_NOT_READY"
+    message = "This invoice is not ready for that step yet."

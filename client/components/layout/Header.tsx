@@ -6,19 +6,26 @@ import { usePathname } from "next/navigation";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth, useLogout } from "@/hooks/auth/useAuth.hooks";
+import { useUnreadCount } from "@/hooks/notification/useNotifications.hooks";
 import { ROLE_LABEL, homePathFor, navLinksFor } from "@/lib/auth/roles";
 
 export function Header() {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated } = useAuth();
+  const logout = useLogout();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Polls only while signed in — an anonymous poll would 401 every 30 seconds
+  // and drag the interceptor through a pointless refresh each time.
+  const { data: unread } = useUnreadCount(isAuthenticated);
 
   // Navigation is rendered only for authenticated users — showing links that
   // immediately bounce to /login is worse than not showing them.
   if (!isAuthenticated || !user) return null;
 
   const displayName = user.full_name?.trim() || user.email;
+  const unreadCount = unread?.count ?? 0;
   // Role-filtered, so a member never sees an Admin link they cannot open.
   // Hiding it is courtesy; /admin's layout and the API are what enforce it.
   const navLinks = navLinksFor(user);
@@ -58,6 +65,16 @@ export function Header() {
         </div>
 
         <div className="hidden items-center gap-3 sm:flex">
+          {unreadCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-400/20"
+              title={`${unreadCount} unread notification${unreadCount === 1 ? "" : "s"}`}
+            >
+              <span aria-hidden="true">●</span>
+              {unreadCount} new
+            </span>
+          )}
+
           <span
             className="max-w-[200px] truncate text-sm text-slate-600 dark:text-slate-400"
             title={displayName}
@@ -70,7 +87,12 @@ export function Header() {
           <Badge tone={user.role === "admin" ? "accent" : "neutral"}>
             {ROLE_LABEL[user.role]}
           </Badge>
-          <Button variant="secondary" onClick={() => void logout()}>
+          <Button
+            variant="secondary"
+            onClick={() => logout.mutate()}
+            isLoading={logout.isPending}
+            disabled={logout.isPending}
+          >
             Logout
           </Button>
         </div>
@@ -115,7 +137,13 @@ export function Header() {
                 {ROLE_LABEL[user.role]}
               </Badge>
             </div>
-            <Button variant="secondary" fullWidth onClick={() => void logout()}>
+            <Button
+              variant="secondary"
+              fullWidth
+              onClick={() => logout.mutate()}
+              isLoading={logout.isPending}
+              disabled={logout.isPending}
+            >
               Logout
             </Button>
           </div>

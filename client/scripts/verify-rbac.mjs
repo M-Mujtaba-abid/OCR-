@@ -13,7 +13,7 @@
  *   node scripts/verify-rbac.mjs <adminEmail> <adminPassword>
  */
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 const BASE = `${API}/api/v1`;
 const ORIGIN = "http://localhost:3000";
 

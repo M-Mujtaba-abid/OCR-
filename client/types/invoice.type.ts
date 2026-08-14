@@ -1,0 +1,231 @@
+/** Invoice and notification payloads, mirroring the FastAPI schemas. */
+
+/** The backend's `invoice_status` enum, in pipeline order. */
+export type InvoiceStatus =
+  | "uploaded"
+  | "ocr_queued"
+  | "ocr_processing"
+  | "ocr_failed"
+  | "ocr_done"
+  | "matching"
+  | "match_failed"
+  | "pending_review"
+  | "no_match"
+  | "confirmed"
+  | "corrected"
+  | "rejected"
+  | "pushed";
+
+export interface InvoiceUploader {
+  id: string;
+  email: string;
+  full_name: string | null;
+}
+
+export interface Invoice {
+  id: string;
+  file_name: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+  page_count: number | null;
+  member_ref_no: string | null;
+  status: InvoiceStatus;
+  extracted_vendor: string | null;
+  extracted_invoice_no: string | null;
+  extracted_total: number | null;
+  extracted_currency: string | null;
+  matched_po_name: string | null;
+  confidence_score: number | null;
+  created_at: string;
+  updated_at: string;
+  uploader: InvoiceUploader | null;
+}
+
+/** The structured extraction, exactly as the backend validated it. */
+export interface ExtractedLineItem {
+  name: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+}
+
+export interface ExtractedInvoice {
+  vendor_name: string | null;
+  vendor_email: string | null;
+  vendor_address: string | null;
+  po_number: string | null;
+  order_date: string | null;
+  currency: string;
+  items: ExtractedLineItem[];
+  untaxed_amount: number;
+  tax_amount: number;
+  total_amount: number;
+}
+
+/** One row of `invoice_line_matches`. */
+export interface InvoiceLine {
+  id: string;
+  line_no: number;
+  raw_description: string;
+  quantity: number | null;
+  unit_price: number | null;
+  amount: number | null;
+  matched_product_id: number | null;
+  matched_product_name: string | null;
+  confidence: number | null;
+  status: string;
+}
+
+/** One scored purchase order from the pre-filter, as stored in `candidates`. */
+export interface MatchCandidate {
+  po_id: number;
+  po_number: string;
+  vendor: string | null;
+  amount_untaxed: number;
+  amount_total: number;
+  order_date: string | null;
+  score: number;
+  breakdown: Record<string, number>;
+  notes: string[];
+  /** The model's reason for passing this one over. Null for the winner. */
+  rejected_because?: string | null;
+}
+
+/** The audit blob: every candidate considered, with the decision. */
+export interface MatchCandidates {
+  generated_at: string;
+  strategy: string;
+  weights: Record<string, number>;
+  chosen_po_id: number | null;
+  confidence: number | null;
+  reasoning: string | null;
+  items: MatchCandidate[];
+}
+
+export interface InvoiceDetail extends Invoice {
+  tenant_id: string;
+  member_notes: string | null;
+  batch_id: string | null;
+  extracted_json: ExtractedInvoice | null;
+  extracted_untaxed: number | null;
+  candidates: MatchCandidates | null;
+  match_reasoning: string | null;
+  lines: InvoiceLine[];
+  ocr_provider: string | null;
+  ocr_model: string | null;
+  ocr_confidence: number | null;
+  detected_language: string | null;
+  ocr_completed_at: string | null;
+  ocr_error: string | null;
+  extracted_date: string | null;
+  extracted_tax: number | null;
+  extracted_line_count: number | null;
+  matched_po_id: number | null;
+  match_strategy: string | null;
+  was_corrected: boolean;
+  final_po_id: number | null;
+  pushed_to_odoo: boolean;
+  pushed_at: string | null;
+  odoo_bill_id: number | null;
+  reviewed_at: string | null;
+  rejection_reason: string | null;
+}
+
+/** A file the server refused. Reported per-file so a partial upload is legible. */
+export interface UploadRejection {
+  file_name: string;
+  reason: string;
+  code: string;
+}
+
+export interface UploadResult {
+  uploaded: Invoice[];
+  rejected: UploadRejection[];
+}
+
+export interface InvoiceStats {
+  total: number;
+  /** Zero-filled by the backend, so every status is always a key. */
+  by_status: Record<InvoiceStatus, number>;
+  open_count: number;
+}
+
+/** A short-lived signed URL. Never store one — it expires. */
+export interface FileLink {
+  url: string;
+  expires_in: number;
+  file_name: string;
+  mime_type: string | null;
+}
+
+/** The body of a 202: the work is scheduled, not finished. */
+export interface JobAccepted {
+  id: string;
+  status: InvoiceStatus;
+  message: string;
+}
+
+/**
+ * Statuses where the server is still working.
+ *
+ * Drives polling: while any row is in one of these the list refetches, and
+ * when none is, it stops. A constant interval would poll a finished queue
+ * forever.
+ */
+export const TRANSIENT_STATUSES = new Set<InvoiceStatus>([
+  "ocr_queued",
+  "ocr_processing",
+  "matching",
+]);
+
+export interface UploadInput {
+  files: File[];
+  memberRefNo?: string;
+  memberNotes?: string;
+  /** 0-100, as bytes leave the browser. */
+  onProgress?: (percent: number) => void;
+}
+
+export interface InvoiceListParams {
+  page?: number;
+  pageSize?: number;
+  status?: InvoiceStatus;
+  openOnly?: boolean;
+  uploadedBy?: string;
+}
+
+/* -------------------------------------------------------------------------
+ * Notifications
+ * ---------------------------------------------------------------------- */
+
+export type NotificationType =
+  | "invoice_uploaded"
+  | "processing_started"
+  | "ocr_completed"
+  | "ocr_failed"
+  | "match_found"
+  | "no_match_found"
+  | "invoice_confirmed"
+  | "invoice_corrected"
+  | "invoice_rejected"
+  | "invoice_pushed";
+
+export interface AppNotification {
+  id: string;
+  type: NotificationType;
+  title: string;
+  message: string | null;
+  match_history_id: string | null;
+  batch_id: string | null;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface UnreadCount {
+  count: number;
+}
+
+export interface MarkedRead {
+  marked: number;
+}

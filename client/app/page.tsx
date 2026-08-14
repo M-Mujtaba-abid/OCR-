@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import { AuthLoading } from "@/components/auth/AuthLoading";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth } from "@/hooks/auth/useAuth.hooks";
 
 /**
  * Entry point. Waits for the auth bootstrap, then routes by role.

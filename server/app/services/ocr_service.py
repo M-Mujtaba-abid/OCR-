@@ -1,0 +1,274 @@
+"""Read an uploaded invoice with Mistral and persist what it says.
+
+Runs as a background task, so it takes an invoice id rather than an ORM object
+and opens its own database session. `get_db` is request-scoped and closes when
+the response is sent; a task holding that session fails on its first query.
+
+Every failure path ends with a status the UI can render. An unhandled exception
+here would leave a row stuck in `ocr_processing` forever with nothing to explain
+why, which is the worst possible outcome for a queue somebody is watching.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import mistral, storage
+from app.core.config import settings
+from app.core.exceptions import AppError
+from app.db.session import SessionFactory
+from app.lib.logging import get_logger
+from app.models.invoice_line_match import InvoiceLineMatch, LineMatchStatus
+from app.models.match_history import InvoiceStatus, MatchHistory
+from app.repositories.match_history_repository import MatchHistoryRepository
+from app.schemas.extraction import InvoiceExtraction
+
+logger = get_logger(__name__)
+
+#: The extraction brief. The field-by-field rules live in the JSON schema as
+#: `description` text (see schemas/extraction.py); this covers only what a
+#: schema cannot express — what the document is and how to treat absences.
+EXTRACTION_PROMPT = """\
+You are reading a vendor invoice or purchase order.
+
+Extract the transactional data into the provided JSON schema.
+
+- Every field in the schema must appear in your answer. Use null for a string \
+that is genuinely absent from the document and 0.0 for an absent number. Never \
+omit a key and never invent a value.
+- `po_number` is whichever reference the document leads with: a purchase order \
+number, an invoice number, or a document ID.
+- Include every row of the item table, in the order printed.
+- Read the totals from the totals block, not by re-adding the lines. Where the \
+document and the arithmetic disagree, the document wins — that difference is \
+usually a discount, and it is evidence.
+"""
+
+
+async def run_ocr_for_invoice(invoice_id: uuid.UUID) -> None:
+    """Extract one invoice. Never raises — every outcome is a status.
+
+    Called from a background task, where a raised exception would be logged by
+    Starlette and otherwise vanish, leaving the row mid-flight.
+    """
+    async with SessionFactory() as db:
+        repo = MatchHistoryRepository(db)
+        invoice = await repo.find_by_id(invoice_id)
+
+        if invoice is None:
+            # Withdrawn between upload and the task starting. Not an error.
+            logger.info("OCR skipped: invoice %s no longer exists", invoice_id)
+            return
+
+        if invoice.status not in _OCR_STARTABLE:
+            logger.info(
+                "OCR skipped: invoice %s is %s", invoice_id, invoice.status.value
+            )
+            return
+
+        if invoice.status is not InvoiceStatus.OCR_PROCESSING:
+            await repo.update(invoice, status=InvoiceStatus.OCR_PROCESSING)
+            await db.commit()
+
+        try:
+            extraction, outcome = await _extract(invoice)
+        except AppError as exc:
+            await _fail(db, repo, invoice, exc.message)
+            return
+        except Exception:
+            logger.exception("OCR crashed for invoice %s", invoice_id)
+            await _fail(db, repo, invoice, "An unexpected error occurred while reading the document.")
+            return
+
+        await _persist(db, repo, invoice, extraction, outcome)
+
+
+#: Statuses from which extraction may begin. Re-running is allowed from a
+#: finished or failed state so an admin can retry; it is refused mid-flight so
+#: two workers cannot write the same row.
+_OCR_STARTABLE = frozenset(
+    {
+        InvoiceStatus.UPLOADED,
+        InvoiceStatus.OCR_QUEUED,
+        InvoiceStatus.OCR_FAILED,
+        InvoiceStatus.OCR_DONE,
+        InvoiceStatus.NO_MATCH,
+        InvoiceStatus.MATCH_FAILED,
+    }
+)
+
+
+async def _extract(
+    invoice: MatchHistory,
+) -> tuple[InvoiceExtraction, mistral.OcrOutcome]:
+    """Run the extraction. Raises AppError subclasses on failure.
+
+    The document is handed to Mistral as a presigned R2 URL rather than being
+    uploaded to Mistral's own storage. The file is already in R2, the URL is
+    valid for minutes, and this avoids sending every invoice to a second vendor.
+    """
+    signed_url = await storage.generate_presigned_url(
+        invoice.file_key, settings.OCR_SIGNED_URL_TTL
+    )
+
+    # One call: OCR and structured extraction together. The model sees the page
+    # layout, which is what distinguishes a grand total from a line amount in a
+    # table — information a markdown rendering has already thrown away.
+    outcome = await mistral.run_ocr(
+        signed_url,
+        annotation_model=InvoiceExtraction,
+        annotation_prompt=EXTRACTION_PROMPT,
+    )
+
+    if outcome.annotation is not None:
+        return mistral.validate_extraction(outcome.annotation, InvoiceExtraction), outcome
+
+    # No annotation came back. Either the document exceeded the 8-page
+    # annotation cap, or the pass simply returned nothing. Fall back to
+    # structuring the markdown with a chat completion — a second call, working
+    # from flattened text, and measurably worse. Used only when it must be.
+    logger.info(
+        "No annotation for invoice %s (%d pages) — falling back to chat extraction",
+        invoice.id,
+        outcome.page_count,
+    )
+    payload = await mistral.extract_from_text(
+        outcome.markdown,
+        schema_model=InvoiceExtraction,
+        system_prompt=EXTRACTION_PROMPT,
+    )
+    return mistral.validate_extraction(payload, InvoiceExtraction), outcome
+
+
+async def _persist(
+    db: AsyncSession,
+    repo: MatchHistoryRepository,
+    invoice: MatchHistory,
+    extraction: InvoiceExtraction,
+    outcome: mistral.OcrOutcome,
+) -> None:
+    """Write the extraction and its line items in one transaction."""
+    await repo.update(
+        invoice,
+        status=InvoiceStatus.OCR_DONE,
+        ocr_provider="mistral",
+        ocr_model=outcome.model,
+        ocr_raw=outcome.raw,
+        ocr_text=outcome.markdown or None,
+        ocr_completed_at=dt.datetime.now(dt.UTC),
+        ocr_error=None,
+        page_count=outcome.page_count or None,
+        extracted_json=extraction.model_dump(mode="json"),
+        extracted_vendor=extraction.vendor_name,
+        extracted_invoice_no=extraction.po_number,
+        extracted_date=extraction.order_date_value,
+        extracted_total=extraction.total_amount or None,
+        extracted_tax=extraction.tax_amount or None,
+        extracted_untaxed=extraction.untaxed_amount or None,
+        extracted_currency=extraction.currency,
+        extracted_line_count=len(extraction.items),
+    )
+
+    await _replace_lines(db, invoice, extraction)
+    await db.commit()
+
+    logger.info(
+        "OCR done for invoice %s: vendor=%r ref=%r total=%s lines=%d",
+        invoice.id,
+        extraction.vendor_name,
+        extraction.po_number,
+        extraction.total_amount,
+        len(extraction.items),
+    )
+
+
+async def _replace_lines(
+    db: AsyncSession, invoice: MatchHistory, extraction: InvoiceExtraction
+) -> None:
+    """Rewrite the line rows from the extraction.
+
+    Delete-then-insert rather than an upsert: a re-run may legitimately produce
+    a different number of lines, and reconciling old rows against new ones by
+    position would silently attach line 3's confirmed product mapping to a
+    completely different product.
+    """
+    from sqlalchemy import delete
+
+    await db.execute(
+        delete(InvoiceLineMatch).where(InvoiceLineMatch.match_history_id == invoice.id)
+    )
+
+    db.add_all(
+        InvoiceLineMatch(
+            match_history_id=invoice.id,
+            line_no=index,
+            raw_description=item.name[:512],
+            quantity=item.quantity or None,
+            unit_price=item.unit_price or None,
+            amount=item.subtotal or None,
+            status=LineMatchStatus.PENDING,
+            source="pending",
+        )
+        for index, item in enumerate(extraction.items, start=1)
+    )
+    await db.flush()
+
+
+async def _fail(
+    db: AsyncSession,
+    repo: MatchHistoryRepository,
+    invoice: MatchHistory,
+    reason: str,
+) -> None:
+    """Record a failure the UI can show and an admin can retry from."""
+    try:
+        await repo.update(
+            invoice,
+            status=InvoiceStatus.OCR_FAILED,
+            ocr_error=reason[:2000],
+            ocr_completed_at=dt.datetime.now(dt.UTC),
+        )
+        await db.commit()
+    except Exception:
+        # The row cannot be updated — nothing further can be done here, and
+        # raising would only lose the original reason.
+        await db.rollback()
+        logger.exception("Could not record OCR failure for invoice %s", invoice.id)
+
+    logger.warning("OCR failed for invoice %s: %s", invoice.id, reason)
+
+
+async def reap_stuck_invoices(older_than_minutes: int = 10) -> int:
+    """Flip abandoned in-flight rows to a failed state. Run at startup.
+
+    Background tasks do not survive a restart, so a process that dies mid-OCR
+    leaves rows in `ocr_processing` with nothing to move them. Without this they
+    sit there forever, and the UI polls them forever.
+    """
+    from sqlalchemy import update
+
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=older_than_minutes)
+
+    async with SessionFactory() as db:
+        result = await db.execute(
+            update(MatchHistory)
+            .where(
+                MatchHistory.status.in_(
+                    [InvoiceStatus.OCR_PROCESSING, InvoiceStatus.MATCHING]
+                ),
+                MatchHistory.updated_at < cutoff,
+            )
+            .values(
+                status=InvoiceStatus.OCR_FAILED,
+                ocr_error="Processing was interrupted. Please retry.",
+            )
+        )
+        await db.commit()
+        count = int(result.rowcount or 0)
+
+    if count:
+        logger.warning("Reaped %d invoice(s) stuck in processing", count)
+    return count

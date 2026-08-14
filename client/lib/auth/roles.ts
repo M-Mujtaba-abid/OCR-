@@ -9,7 +9,7 @@
  * API still returns 403. Treat everything here as cosmetic.
  */
 
-import type { Permission, User, UserRole } from "@/types/auth";
+import type { Permission, User, UserRole } from "@/types/user.type";
 
 /** Least to most privileged. Used for `atLeast` comparisons. */
 const ROLE_RANK: Record<UserRole, number> = {

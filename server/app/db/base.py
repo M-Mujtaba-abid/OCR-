@@ -25,6 +25,20 @@ NAMING_CONVENTION = {
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
+    # Fetch server-computed values with RETURNING, in the same statement.
+    #
+    # Without this, `updated_at` (which is `onupdate=func.now()`, so the
+    # database computes it) is marked expired after every UPDATE. Reading it
+    # afterwards — which is exactly what serialising the row does — triggers a
+    # lazy refresh, and a lazy refresh inside async SQLAlchemy raises
+    # MissingGreenlet. That failure is invisible until an endpoint updates a
+    # row and then returns it, at which point the write has already committed
+    # and the client gets a 500 for a request that actually succeeded.
+    #
+    # RETURNING costs nothing extra on PostgreSQL: it rides along on the
+    # statement that was already being sent.
+    __mapper_args__ = {"eager_defaults": True}
+
     # Decided once here so no model has to remember that timestamps carry a
     # timezone or that money is never a float.
     type_annotation_map = {

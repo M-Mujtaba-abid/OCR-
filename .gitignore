@@ -1,0 +1,47 @@
+# ---------------------------------------------------------------- secrets
+# Never commit a real environment file. Only the .example templates.
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------- generated data
+# Purchase orders exported from a live Odoo contain real supplier names and
+# real prices. That is commercial data and does not belong in a git history,
+# where it cannot be taken back out.
+server/fixtures/odoo_*.json
+server/fixtures/invoices/
+
+# Generated test PDFs — rebuild with scripts/make_test_invoice.py
+*.scratch*.pdf
+
+# ---------------------------------------------------------------- python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# ---------------------------------------------------------------- node
+node_modules/
+.next/
+out/
+build/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------------------------------------------------------------- editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ---------------------------------------------------------------- logs
+*.log
+npm-debug.log*
+yarn-error.log*

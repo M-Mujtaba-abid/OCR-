@@ -92,12 +92,82 @@ class Settings(BaseSettings):
 
     UPLOAD_MAX_SIZE_MB: int = Field(default=10, ge=1, le=200)
 
+    # Per-request file count. Bounded because each file is buffered in memory
+    # during validation, so N x UPLOAD_MAX_SIZE_MB is the real memory cost of
+    # one request — 10 x 10 MB is a deliberate ceiling, not an arbitrary one.
+    MAX_FILES_PER_UPLOAD: int = Field(default=10, ge=1, le=50)
+
+    # ---------------------------------------------------------------- OCR / AI
+    MISTRAL_API_KEY: SecretStr = SecretStr("")
+    MISTRAL_OCR_MODEL: str = "mistral-ocr-latest"
+    MISTRAL_CHAT_MODEL: str = "mistral-large-latest"
+
+    # The kill switch. Every upload costs money once OCR runs automatically;
+    # flipping this to false reverts to admin-triggered processing without a
+    # code change or a redeploy.
+    OCR_AUTO_ON_UPLOAD: bool = True
+
+    # Mistral caps document annotation at 8 pages (plain OCR allows 1000).
+    # Past this the service falls back to OCR-then-chat over the markdown.
+    OCR_MAX_ANNOTATION_PAGES: int = Field(default=8, ge=1, le=8)
+
+    # How long the signed URL handed to Mistral stays valid. Long enough for a
+    # large PDF to be fetched, short enough that a leaked log line is useless.
+    OCR_SIGNED_URL_TTL: int = Field(default=600, ge=60, le=3600)
+
+    # ---------------------------------------------------------------- Odoo
+    ODOO_URL: str = ""
+    ODOO_DB: str = ""
+    ODOO_USERNAME: str = ""
+    ODOO_API_KEY: SecretStr = SecretStr("")
+
+    # Which purchase orders are eligible for matching. Kept as config because
+    # every deployment's definition of "still open" differs — some invoice off
+    # 'done' orders, some never leave 'purchase'.
+    ODOO_PO_STATES: Annotated[list[str], NoDecode] = ["purchase", "done"]
+    ODOO_PO_INVOICE_STATUS: str = "to invoice"
+    # A ceiling on one fetch. Matching narrows candidates locally anyway, and an
+    # unbounded search_read against a large Odoo is how a request times out.
+    ODOO_PO_FETCH_LIMIT: int = Field(default=500, ge=1, le=5000)
+
+    # A JSON file of purchase orders to use INSTEAD of a live Odoo.
+    #
+    # Only honoured when ODOO_URL is empty, so it can never shadow a real
+    # connection: filling in the real credentials disables it automatically and
+    # nothing else changes. Every fetch logs a warning and /odoo/connection
+    # reports source="fixture", because silently serving fake purchase orders
+    # to an accounts-payable screen would be worse than serving none.
+    ODOO_FIXTURE_PATH: str = ""
+
+    # ---------------------------------------------------------------- matching
+    # How many candidates reach the LLM. This is the number that keeps the
+    # design affordable: the model sees 15 orders, never 5000.
+    MATCH_CANDIDATE_LIMIT: int = Field(default=15, ge=1, le=50)
+    # Below this a candidate is not worth showing the LLM at all.
+    MATCH_SCORE_FLOOR: float = Field(default=35.0, ge=0, le=100)
+    # Below this the verdict is recorded as no_match rather than a weak guess.
+    MATCH_MIN_CONFIDENCE: float = Field(default=70.0, ge=0, le=100)
+
     @field_validator("R2_PUBLIC_URL", "R2_ACCOUNT_ID", "R2_BUCKET_NAME", mode="after")
     @classmethod
     def _strip_value(cls, v: str) -> str:
         # A trailing slash pasted from the Cloudflare dashboard would otherwise
         # produce "https://files.example.com//invoices/...".
         return v.strip().rstrip("/")
+
+    @field_validator("ODOO_PO_STATES", mode="before")
+    @classmethod
+    def _parse_po_states(cls, v: Any) -> list[str]:
+        # Same comma-or-JSON handling as CORS_ORIGINS, for the same reason:
+        # a .env file cannot hold a Python list.
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("["):
+                import json
+
+                return list(json.loads(v))
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return [str(state) for state in v]
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -193,6 +263,30 @@ class Settings(BaseSettings):
     @property
     def upload_max_size_bytes(self) -> int:
         return self.UPLOAD_MAX_SIZE_MB * 1024 * 1024
+
+    # ------------------------------------------------------------- OCR / Odoo
+    @property
+    def is_ocr_configured(self) -> bool:
+        return bool(self.MISTRAL_API_KEY.get_secret_value())
+
+    @property
+    def is_odoo_configured(self) -> bool:
+        return bool(
+            self.ODOO_URL
+            and self.ODOO_DB
+            and self.ODOO_USERNAME
+            and self.ODOO_API_KEY.get_secret_value()
+        )
+
+    @property
+    def odoo_base_url(self) -> str:
+        """Normalised, no trailing slash — the XML-RPC paths are appended."""
+        return self.ODOO_URL.strip().rstrip("/")
+
+    @property
+    def uses_odoo_fixture(self) -> bool:
+        """A real connection always wins over the fixture."""
+        return bool(self.ODOO_FIXTURE_PATH) and not self.ODOO_URL.strip()
 
 
 @lru_cache(maxsize=1)

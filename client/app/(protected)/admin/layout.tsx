@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
 import { AuthLoading } from "@/components/auth/AuthLoading";
-import { useAuth } from "@/hooks/useAuth";
+import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import { canViewPath, homePathFor } from "@/lib/auth/roles";
 
 /**

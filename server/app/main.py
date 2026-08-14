@@ -22,6 +22,7 @@ from app.lib.logging import configure_logging, get_logger
 from app.lib.responses import ApiResponse
 from app.middleware.request_context import RequestContextMiddleware
 from app.routes import api_router
+from app.services.ocr_service import reap_stuck_invoices
 
 logger = get_logger(__name__)
 
@@ -39,6 +40,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     logger.info("connected to %s", settings.db_host)
     logger.info("%s", version.split(" on ")[0])
     logger.info("environment=%s debug=%s", settings.ENVIRONMENT, settings.DEBUG)
+
+    # Background tasks do not survive a restart, so a process that died mid-OCR
+    # left rows in `ocr_processing` with nothing left to move them. Clearing
+    # them here is the difference between a retryable failure and a row the UI
+    # polls forever.
+    try:
+        await reap_stuck_invoices()
+    except Exception:
+        # Never block startup on housekeeping.
+        logger.exception("Stuck-invoice reaper failed")
+
+    logger.info(
+        "ocr=%s odoo=%s storage=%s",
+        "on" if settings.is_ocr_configured else "off",
+        "on" if settings.is_odoo_configured else "off",
+        "on" if settings.is_storage_configured else "off",
+    )
 
     yield
 

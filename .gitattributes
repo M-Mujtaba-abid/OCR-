@@ -1,0 +1,21 @@
+# Normalise line endings so a Windows checkout and a Linux CI runner produce
+# byte-identical files. Without this, every file committed from Windows shows
+# up as fully rewritten in a diff taken on Linux.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF — cmd and PowerShell are fussy about it.
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Binary: never touch, never diff.
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+
+# Generated — collapse in review and don't count toward language stats.
+package-lock.json  linguist-generated=true -diff

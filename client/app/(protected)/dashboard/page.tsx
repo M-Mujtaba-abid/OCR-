@@ -3,219 +3,166 @@
 import { useState } from "react";
 import Link from "next/link";
 
+import { InvoicesPanel } from "@/components/invoices/InvoicesPanel";
+import { InvoiceUpload } from "@/components/invoices/InvoiceUpload";
+import { statusLabel } from "@/components/invoices/InvoiceStatusBadge";
 import { Alert } from "@/components/ui/Alert";
 import { Badge, Field } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { useAuth } from "@/hooks/useAuth";
-import { ROLE_DESCRIPTION, ROLE_LABEL, isAdmin } from "@/lib/auth/roles";
+import { StatCard } from "@/components/ui/StatCard";
+import { TabPanel, Tabs, type TabItem } from "@/components/ui/Tabs";
+import { useAuth, useLogout, useLogoutAll } from "@/hooks/auth/useAuth.hooks";
+import { useMyInvoiceStats } from "@/hooks/invoice/useInvoices.hooks";
+import { ROLE_LABEL, isAdmin } from "@/lib/auth/roles";
 
-/**
- * The member / manager dashboard.
- *
- * Admins land on /admin instead, but this page is deliberately still reachable
- * by them — an admin is also a user with an account, and hiding their own
- * profile behind a role check would be arbitrary. What changes by role is the
- * DEFAULT destination and which capability sections appear, not whether the
- * page exists.
- */
+type TabId = "upload" | "invoices" | "account";
+
 export default function DashboardPage() {
-  const { user, can, logout, logoutAll } = useAuth();
-  const [busy, setBusy] = useState<"logout" | "logout-all" | null>(null);
+  const { user } = useAuth();
+  const [tab, setTab] = useState<TabId>("upload");
 
-  // The protected layout guarantees a user; narrowing satisfies TypeScript
-  // without a non-null assertion.
+  // Cached, so switching tabs does not refetch. The upload mutation invalidates
+  // the `invoices` key, which is what makes the counts update after an upload
+  // without any manual wiring here.
+  const { data: stats } = useMyInvoiceStats();
+
+  const logout = useLogout();
+  const logoutAll = useLogoutAll();
+
   if (!user) return null;
 
   const displayName = user.full_name?.trim() || user.email;
-  const canApprove = can("invoice.approve");
 
-  async function handle(action: "logout" | "logout-all") {
-    setBusy(action);
-    try {
-      await (action === "logout" ? logout() : logoutAll());
-    } finally {
-      setBusy(null);
-    }
-  }
+  const tabs: readonly TabItem<TabId>[] = [
+    { id: "upload", label: "Upload" },
+    { id: "invoices", label: "My invoices", badge: stats?.total },
+    { id: "account", label: "Account" },
+  ];
 
   return (
-    <div className="space-y-8">
-      <header>
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">
-            Welcome, {displayName}
+            {displayName}
           </h1>
-          <Badge tone={user.role === "manager" ? "warning" : "neutral"}>
-            {ROLE_LABEL[user.role]}
-          </Badge>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+            {user.email}
+          </p>
         </div>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          {ROLE_DESCRIPTION[user.role]}
-        </p>
+        <Badge tone={user.role === "manager" ? "warning" : "neutral"}>
+          {ROLE_LABEL[user.role]}
+        </Badge>
       </header>
-
 
       {isAdmin(user) && (
         <Alert variant="info">
-          You&apos;re an administrator.{" "}
           <Link href="/admin" className="font-medium underline underline-offset-4">
-            Go to the admin console
+            Open the admin console
           </Link>{" "}
-          to manage users and roles.
+          to review every invoice and manage users.
         </Alert>
       )}
 
-      {/* --------------------------------------------------------- capabilities */}
-      {/* <section
-        aria-labelledby="capabilities-heading"
-        className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <h2
-          id="capabilities-heading"
-          className="text-sm font-semibold text-slate-900 dark:text-white"
-        >
-          What you can do
-        </h2>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Granted by your role. The server enforces these independently.
-        </p>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Total" value={stats?.total} />
+        <StatCard
+          label={statusLabel("uploaded")}
+          value={stats?.by_status.uploaded}
+          tone="warning"
+        />
+        <StatCard
+          label={statusLabel("pending_review")}
+          value={stats?.by_status.pending_review}
+          tone="warning"
+        />
+        <StatCard
+          label={statusLabel("pushed")}
+          value={stats?.by_status.pushed}
+          tone="positive"
+        />
+      </div>
 
-        <ul className="mt-4 space-y-2 text-sm">
-          <Capability granted={can("invoice.create")}>Upload invoices</Capability>
-          <Capability granted={can("invoice.read")}>
-            View invoices and match results
-          </Capability>
-          <Capability granted={canApprove}>Approve or reject matches</Capability>
-          <Capability granted={can("user.read")}>View the user directory</Capability>
-          <Capability granted={can("user.update")}>
-            Manage user roles and access
-          </Capability>
-        </ul>
+      <div>
+        <Tabs tabs={tabs} active={tab} onChange={setTab} label="Dashboard sections" />
 
-        {!canApprove && (
-          <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
-            Approvals are handled by a manager or administrator.
-          </p>
-        )}
-      </section> */}
-
-      {/* --------------------------------------------------------------- account */}
-      <section
-        aria-labelledby="account-heading"
-        className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <h2
-          id="account-heading"
-          className="text-sm font-semibold text-slate-900 dark:text-white"
-        >
-          Account
-        </h2>
-
-        <dl className="mt-4 grid gap-4 sm:grid-cols-2">
-          <Field label="Email" value={user.email} />
-          <Field label="Name" value={user.full_name ?? "—"} />
-          <Field
-            label="Role"
-            value={<Badge>{ROLE_LABEL[user.role]}</Badge>}
-          />
-          <Field
-            label="Account status"
-            value={
-              <Badge tone={user.is_active ? "positive" : "negative"}>
-                {user.is_active ? "Active" : "Disabled"}
-              </Badge>
-            }
-          />
-          <Field
-            label="Verification"
-            value={
-              <Badge tone={user.is_verified ? "positive" : "warning"}>
-                {user.is_verified ? "Verified" : "Unverified"}
-              </Badge>
-            }
-          />
-          <Field
-            label="Member since"
-            value={new Date(user.created_at).toLocaleDateString()}
-          />
-        </dl>
-      </section>
-
-      {/* -------------------------------------------------------------- sessions */}
-      <section
-        aria-labelledby="sessions-heading"
-        className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900"
-      >
-        <h2
-          id="sessions-heading"
-          className="text-sm font-semibold text-slate-900 dark:text-white"
-        >
-          Sessions
-        </h2>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Sign out of this device, or every device you&apos;re signed in on.
-        </p>
-
-        {!user.is_verified && (
-          <div className="mt-4">
-            <Alert variant="info">
-              Your email address hasn&apos;t been verified yet.
-            </Alert>
+        <TabPanel id="upload" active={tab === "upload"}>
+          <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+            <InvoiceUpload
+              // Move to the list so the result of the action is visible, rather
+              // than leaving the user staring at an empty upload form.
+              onUploaded={() => setTab("invoices")}
+            />
           </div>
-        )}
+        </TabPanel>
 
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row">
-          <Button
-            variant="secondary"
-            onClick={() => void handle("logout")}
-            isLoading={busy === "logout"}
-            disabled={busy !== null}
-          >
-            Logout
-          </Button>
-          <Button
-            variant="danger"
-            onClick={() => void handle("logout-all")}
-            isLoading={busy === "logout-all"}
-            disabled={busy !== null}
-          >
-            Logout all devices
-          </Button>
-        </div>
-      </section>
+        <TabPanel id="invoices" active={tab === "invoices"}>
+          <InvoicesPanel
+            scope="mine"
+            canDelete
+            emptyMessage="Nothing uploaded yet. Use the Upload tab to add invoices."
+          />
+        </TabPanel>
+
+        <TabPanel id="account" active={tab === "account"}>
+          <div className="space-y-6">
+            <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Profile
+              </h2>
+              <dl className="mt-4 grid gap-4 sm:grid-cols-2">
+                <Field label="Email" value={user.email} />
+                <Field label="Name" value={user.full_name ?? "—"} />
+                <Field label="Role" value={<Badge>{ROLE_LABEL[user.role]}</Badge>} />
+                <Field
+                  label="Account status"
+                  value={
+                    <Badge tone={user.is_active ? "positive" : "negative"}>
+                      {user.is_active ? "Active" : "Disabled"}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label="Verification"
+                  value={
+                    <Badge tone={user.is_verified ? "positive" : "warning"}>
+                      {user.is_verified ? "Verified" : "Unverified"}
+                    </Badge>
+                  }
+                />
+                <Field
+                  label="Member since"
+                  value={new Date(user.created_at).toLocaleDateString()}
+                />
+              </dl>
+            </section>
+
+            <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Sessions
+              </h2>
+              <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+                <Button
+                  variant="secondary"
+                  onClick={() => logout.mutate()}
+                  isLoading={logout.isPending}
+                  disabled={logout.isPending || logoutAll.isPending}
+                >
+                  Sign out
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => logoutAll.mutate()}
+                  isLoading={logoutAll.isPending}
+                  disabled={logout.isPending || logoutAll.isPending}
+                >
+                  Sign out everywhere
+                </Button>
+              </div>
+            </section>
+          </div>
+        </TabPanel>
+      </div>
     </div>
-  );
-}
-
-function Capability({
-  granted,
-  children,
-}: {
-  granted: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <li className="flex items-start gap-2.5">
-      <span
-        aria-hidden="true"
-        className={
-          granted
-            ? "mt-0.5 text-emerald-600 dark:text-emerald-400"
-            : "mt-0.5 text-slate-400 dark:text-slate-600"
-        }
-      >
-        {granted ? "✓" : "✕"}
-      </span>
-      <span
-        className={
-          granted
-            ? "text-slate-900 dark:text-slate-100"
-            : "text-slate-500 line-through dark:text-slate-500"
-        }
-      >
-        {children}
-      </span>
-      <span className="sr-only">{granted ? "(allowed)" : "(not allowed)"}</span>
-    </li>
   );
 }

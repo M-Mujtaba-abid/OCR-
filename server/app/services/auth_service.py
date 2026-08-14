@@ -180,17 +180,50 @@ class AuthService:
             raise InactiveUserError()
 
         # --- rotate ----------------------------------------------------------
-        # New session first, so `rotated_to_id` on the old row points at a
-        # row that actually exists.
+        # Claim the old session FIRST, with a conditional UPDATE, and only mint
+        # a successor if we won it.
+        #
+        # The obvious ordering — create the new session, then revoke the old —
+        # is what made this racy. Four parallel refreshes with the same token
+        # all passed the checks above, all created a session, and all revoked
+        # the same row: four live sessions from one token, and rotation
+        # providing no protection at all. Verified, not theoretical.
+        #
+        # `claim_for_rotation` pushes the decision into a single statement the
+        # database serialises, so exactly one caller proceeds.
+        # Read off the ORM object BEFORE any rollback. A rollback expires every
+        # attribute, and reading one afterwards triggers a lazy refresh — which
+        # inside async SQLAlchemy raises MissingGreenlet and turns a clean 401
+        # into a 503.
+        session_id, session_user_id = session.id, session.user_id
+
+        if not await self.sessions.claim_for_rotation(session_id):
+            # Someone else rotated this token between our SELECT and here. The
+            # legitimate client holds the successor, so this request is either
+            # a duplicate in flight or a replay. Either way it must not get a
+            # session — and it is not treated as theft, because a client that
+            # simply fired two refreshes at once has done nothing wrong.
+            await self.db.rollback()
+            logger.info(
+                "refresh lost the rotation race: user=%s session=%s",
+                session_user_id,
+                session_id,
+            )
+            raise InvalidRefreshTokenError("This token has already been used.")
+
         new_tokens = await self._issue_tokens(
             user, ip_address=ip_address, user_agent=user_agent
         )
-        await self.sessions.revoke(session, rotated_to_id=new_tokens.session_id)
+        # Recorded after the successor exists, so `rotated_to_id` never points
+        # at a row that was never created.
+        await self.sessions.link_rotation(
+            session_id, rotated_to_id=new_tokens.session_id
+        )
         await self.db.commit()
         logger.info(
             "refresh rotated: user=%s old=%s new=%s",
-            user.id,
-            session.id,
+            new_tokens.user.id,
+            session_id,
             new_tokens.session_id,
         )
         return new_tokens

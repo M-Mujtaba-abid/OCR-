@@ -71,6 +71,53 @@ class AuthSessionRepository:
         await self.db.flush()
         return session
 
+    async def claim_for_rotation(self, session_id: uuid.UUID) -> bool:
+        """Atomically claim a live session for rotation. True if we won it.
+
+        This is what makes rotation safe under concurrency, and it has to be a
+        single conditional statement rather than a read-then-write.
+
+        The read-then-write version has a real hole: four parallel refreshes
+        presenting the same token each SELECT the row, all four see
+        `revoked_at IS NULL`, and all four rotate. The result is four live
+        sessions minted from one token — which is precisely the state rotation
+        exists to make impossible, and it means a stolen token that is used
+        alongside the real client is never detected.
+
+        `UPDATE ... WHERE revoked_at IS NULL` pushes the decision into the
+        database, where the row lock serialises it. Exactly one caller sees
+        rowcount 1; the rest see 0 and are rejected.
+
+        Deliberately NOT setting `rotated_to_id` here — the successor does not
+        exist yet. The caller fills it in once the new session is created, so a
+        loser of this race is left as a plain revoked row rather than one that
+        claims a successor it never had.
+        """
+        stmt = (
+            update(AuthSession)
+            .where(
+                AuthSession.id == session_id,
+                AuthSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=dt.datetime.now(dt.UTC))
+        )
+        return int((await self.db.execute(stmt)).rowcount or 0) == 1
+
+    async def link_rotation(
+        self, session_id: uuid.UUID, *, rotated_to_id: uuid.UUID
+    ) -> None:
+        """Record the successor on an already-claimed session.
+
+        Separate from the claim because the new session's id only exists after
+        the claim has been won.
+        """
+        stmt = (
+            update(AuthSession)
+            .where(AuthSession.id == session_id)
+            .values(rotated_to_id=rotated_to_id)
+        )
+        await self.db.execute(stmt)
+
     async def revoke_all_for_user(
         self, user_id: uuid.UUID, *, exclude_session_id: uuid.UUID | None = None
     ) -> int:
