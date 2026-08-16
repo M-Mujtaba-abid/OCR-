@@ -24,7 +24,7 @@ from app.lib.logging import get_logger
 from app.models.invoice_line_match import InvoiceLineMatch, LineMatchStatus
 from app.models.match_history import InvoiceStatus, MatchHistory
 from app.repositories.match_history_repository import MatchHistoryRepository
-from app.schemas.extraction import InvoiceExtraction
+from app.schemas.extraction import DocumentExtraction, InvoiceExtraction
 
 logger = get_logger(__name__)
 
@@ -32,19 +32,44 @@ logger = get_logger(__name__)
 #: `description` text (see schemas/extraction.py); this covers only what a
 #: schema cannot express — what the document is and how to treat absences.
 EXTRACTION_PROMPT = """\
-You are reading a vendor invoice or purchase order.
+You are reading a document that contains one or more vendor invoices, bills or
+purchase orders.
 
-Extract the transactional data into the provided JSON schema.
+Extract into the provided JSON schema.
 
-- Every field in the schema must appear in your answer. Use null for a string \
-that is genuinely absent from the document and 0.0 for an absent number. Never \
-omit a key and never invent a value.
-- `po_number` is whichever reference the document leads with: a purchase order \
-number, an invoice number, or a document ID.
-- Include every row of the item table, in the order printed.
-- Read the totals from the totals block, not by re-adding the lines. Where the \
-document and the arithmetic disagree, the document wins — that difference is \
-usually a discount, and it is evidence.
+HOW MANY INVOICES
+- Return one entry in `invoices` for EVERY separate document in the file.
+- A new invoice begins where a different document number, a different vendor,
+  or a second totals block appears. Batch scans and ERP exports routinely put
+  several unrelated invoices in one PDF.
+- A single invoice whose item table continues onto the next page is still ONE
+  invoice. Do not split it, and do not merge two invoices into one.
+
+FIELDS
+- Every field in the schema must appear in your answer. Use null for a string
+  that is genuinely absent and 0.0 for an absent number. Never omit a key and
+  never invent a value.
+- `po_number` is whichever reference the document leads with: a purchase order
+  number, an invoice number, or a document ID.
+- Include every row of each item table, in the order printed.
+- Capture `product_code` when a line carries a SKU, article number or product
+  ID — including one written inside the description, such as
+  "Product ID: 4426" or a bracketed code like "[AVO-01]".
+- Capture `uom` when a unit is printed: kg, pcs, box, ltr, carton.
+
+LANGUAGE
+- Transcribe text in its ORIGINAL language and script. Arabic, Urdu, Chinese
+  and Cyrillic descriptions and vendor names must be preserved as written.
+  Never translate and never transliterate — the value has to match what is
+  stored in the ERP, which is the original.
+- Numbers are the exception: convert Eastern Arabic numerals (٠١٢٣) and any
+  other localised digits to Western digits, and use a period as the decimal
+  separator regardless of what the document prints.
+
+TOTALS
+- Read the totals from the totals block, not by re-adding the lines. Where the
+  document and the arithmetic disagree, the document wins — that difference is
+  usually a discount, and it is evidence.
 """
 
 
@@ -103,7 +128,7 @@ _OCR_STARTABLE = frozenset(
 
 async def _extract(
     invoice: MatchHistory,
-) -> tuple[InvoiceExtraction, mistral.OcrOutcome]:
+) -> tuple[DocumentExtraction, mistral.OcrOutcome]:
     """Run the extraction. Raises AppError subclasses on failure.
 
     The document is handed to Mistral as a presigned R2 URL rather than being
@@ -119,12 +144,12 @@ async def _extract(
     # table — information a markdown rendering has already thrown away.
     outcome = await mistral.run_ocr(
         signed_url,
-        annotation_model=InvoiceExtraction,
+        annotation_model=DocumentExtraction,
         annotation_prompt=EXTRACTION_PROMPT,
     )
 
     if outcome.annotation is not None:
-        return mistral.validate_extraction(outcome.annotation, InvoiceExtraction), outcome
+        return mistral.validate_extraction(outcome.annotation, DocumentExtraction), outcome
 
     # No annotation came back. Either the document exceeded the 8-page
     # annotation cap, or the pass simply returned nothing. Fall back to
@@ -137,20 +162,77 @@ async def _extract(
     )
     payload = await mistral.extract_from_text(
         outcome.markdown,
-        schema_model=InvoiceExtraction,
+        schema_model=DocumentExtraction,
         system_prompt=EXTRACTION_PROMPT,
     )
-    return mistral.validate_extraction(payload, InvoiceExtraction), outcome
+    return mistral.validate_extraction(payload, DocumentExtraction), outcome
 
 
 async def _persist(
     db: AsyncSession,
     repo: MatchHistoryRepository,
     invoice: MatchHistory,
+    document: DocumentExtraction,
+    outcome: mistral.OcrOutcome,
+) -> None:
+    """Write the extraction, splitting a multi-invoice document into rows.
+
+    The uploaded row takes the first invoice. Any others get their own row
+    pointing at the SAME stored file, because everything downstream — matching,
+    review, the eventual Odoo bill — assumes one row is one invoice against one
+    purchase order. Keeping three invoices in one row would make every one of
+    those steps ambiguous.
+    """
+    extraction = document.primary
+
+    await _write_one(db, repo, invoice, extraction, outcome)
+
+    for index, extra in enumerate(document.invoices[1:], start=2):
+        sibling = await repo.create(
+            tenant_id=invoice.tenant_id,
+            uploaded_by=invoice.uploaded_by,
+            member_ref_no=invoice.member_ref_no,
+            member_notes=invoice.member_notes,
+            # Same object in R2 — one upload, not copies. The file name is
+            # suffixed so a queue of split rows is legible at a glance.
+            file_name=f"{invoice.file_name} [{index}]",
+            file_key=invoice.file_key,
+            file_url=invoice.file_url,
+            file_size_bytes=invoice.file_size_bytes,
+            mime_type=invoice.mime_type,
+            status=InvoiceStatus.UPLOADED,
+            extra={"split_from": str(invoice.id), "document_index": index},
+        )
+        await _write_one(db, repo, sibling, extra, outcome)
+
+    await db.commit()
+
+    if len(document.invoices) > 1:
+        logger.info(
+            "Invoice %s contained %d separate invoices — split into %d rows",
+            invoice.id,
+            len(document.invoices),
+            len(document.invoices),
+        )
+
+    logger.info(
+        "OCR done for invoice %s: vendor=%r ref=%r total=%s lines=%d",
+        invoice.id,
+        extraction.vendor_name,
+        extraction.po_number,
+        extraction.total_amount,
+        len(extraction.items),
+    )
+
+
+async def _write_one(
+    db: AsyncSession,
+    repo: MatchHistoryRepository,
+    invoice: MatchHistory,
     extraction: InvoiceExtraction,
     outcome: mistral.OcrOutcome,
 ) -> None:
-    """Write the extraction and its line items in one transaction."""
+    """Apply one extracted invoice to one row. Does not commit."""
     await repo.update(
         invoice,
         status=InvoiceStatus.OCR_DONE,
@@ -172,17 +254,9 @@ async def _persist(
         extracted_line_count=len(extraction.items),
     )
 
+    # No commit here: the caller commits once, so a multi-invoice document is
+    # written whole or not at all.
     await _replace_lines(db, invoice, extraction)
-    await db.commit()
-
-    logger.info(
-        "OCR done for invoice %s: vendor=%r ref=%r total=%s lines=%d",
-        invoice.id,
-        extraction.vendor_name,
-        extraction.po_number,
-        extraction.total_amount,
-        len(extraction.items),
-    )
 
 
 async def _replace_lines(
@@ -206,6 +280,10 @@ async def _replace_lines(
             match_history_id=invoice.id,
             line_no=index,
             raw_description=item.name[:512],
+            # The SKU printed on the line. When a vendor quotes the buyer's own
+            # product code this makes line matching exact rather than fuzzy.
+            raw_product_code=item.product_code,
+            uom=item.uom,
             quantity=item.quantity or None,
             unit_price=item.unit_price or None,
             amount=item.subtotal or None,

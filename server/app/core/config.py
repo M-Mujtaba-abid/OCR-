@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # How long after a token is rotated that re-presenting it is treated as a
+    # duplicate rather than as theft.
+    #
+    # Without this, any client that fires two refreshes at once — a retry, a
+    # double-click, two tabs waking together — has every one of its sessions
+    # revoked. The second request arrives moments after the first rotated the
+    # token, which is indistinguishable from a replay if you only look at the
+    # revoked flag.
+    #
+    # The window costs little: a replay inside it still gets a 401 and still
+    # receives no session, because the successor was already issued to someone
+    # else. All it forgoes is the revoke-everything response, for a few
+    # seconds. Signing an honest user out of every device for double-clicking
+    # is the worse failure.
+    REFRESH_REUSE_GRACE_SECONDS: int = Field(default=10, ge=0, le=120)
+
     # ---------------------------------------------------------------- cookies
     AUTH_COOKIE_NAME: str = "refresh_token"
     # Must be True in production — a refresh token sent over plain HTTP is

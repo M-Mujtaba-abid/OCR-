@@ -83,6 +83,8 @@ def _coerce_float(value: Any) -> float:
 #: `mode="before"` validators that apply it.
 _ITEM_DEFAULTS: dict[str, Any] = {
     "name": "",
+    "product_code": None,
+    "uom": None,
     "quantity": 0.0,
     "unit_price": 0.0,
     "subtotal": 0.0,
@@ -108,7 +110,24 @@ class ExtractedLineItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(
-        description="Clear product description, title, or item name as printed."
+        description=(
+            "The product description exactly as printed, in its original "
+            "language and script. Do not translate it."
+        )
+    )
+    product_code: str | None = Field(
+        description=(
+            "Any SKU, item code, article number or product ID printed against "
+            "this line, including one embedded in the description such as "
+            "'Product ID: 4426' or a bracketed reference like '[AVO-01]'. "
+            "null if the line carries none."
+        )
+    )
+    uom: str | None = Field(
+        description=(
+            "Unit of measure as printed — kg, pcs, box, ltr, carton. null if "
+            "the document does not state one."
+        )
     )
     quantity: float = Field(
         description="Number of units ordered, as a number. 0 if not printed."
@@ -137,6 +156,16 @@ class ExtractedLineItem(BaseModel):
     def _name(cls, v: Any) -> str:
         # A nameless line is still a line — the amounts are what matching uses.
         return (str(v).strip() if v is not None else "") or "(unnamed item)"
+
+    @field_validator("product_code", "uom", mode="before")
+    @classmethod
+    def _optional_text(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        text = str(v).strip()
+        if not text or text.lower() in {"null", "none", "n/a", "na", "-"}:
+            return None
+        return text[:120]
 
     @model_validator(mode="after")
     def _fill_subtotal(self) -> "ExtractedLineItem":
@@ -313,3 +342,52 @@ class InvoiceExtraction(BaseModel):
         return bool(self.vendor_name or self.po_number) and (
             self.total_amount > 0 or self.untaxed_amount > 0 or bool(self.items)
         )
+
+
+class DocumentExtraction(BaseModel):
+    """Every invoice found in one uploaded file.
+
+    A PDF is not reliably one invoice. Scanning a stack of paper, exporting a
+    day's purchases from an ERP, or forwarding a bundled statement all produce
+    a single file containing several distinct documents — different vendors,
+    different references, different totals.
+
+    Extracting into a single `InvoiceExtraction` silently kept the first and
+    discarded the rest, which reads to a user as "OCR missed my data" when the
+    OCR was in fact perfect. Modelling the document as a LIST is what makes
+    that case representable at all; the service then splits it into one
+    database row per invoice, because one row per invoice is what the rest of
+    the system — matching, review, the Odoo bill — is built on.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    invoices: list[InvoiceExtraction] = Field(
+        description=(
+            "One entry for EVERY separate invoice, bill or purchase order in "
+            "this document. Most files contain exactly one; a scanned batch or "
+            "an ERP export may contain several. A new invoice starts wherever a "
+            "different document number, vendor or totals block appears — a "
+            "single invoice continuing across a page break is NOT a new entry. "
+            "Never merge two invoices into one, and never split one invoice in "
+            "two."
+        )
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_absent(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Tolerate a model that answered with a bare invoice object rather
+            # than the wrapper — the shape is unambiguous either way.
+            if "invoices" not in data and "vendor_name" in data:
+                return {"invoices": [data]}
+            return {"invoices": data.get("invoices") or []}
+        if isinstance(data, list):
+            return {"invoices": data}
+        return data
+
+    @property
+    def primary(self) -> InvoiceExtraction:
+        """The first invoice, or an empty one when nothing was readable."""
+        return self.invoices[0] if self.invoices else InvoiceExtraction.model_validate({})

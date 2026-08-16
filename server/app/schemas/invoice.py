@@ -59,6 +59,11 @@ class InvoiceLineRead(BaseModel):
     id: uuid.UUID
     line_no: int
     raw_description: str
+    #: The SKU printed on the line, when the vendor quotes one. This is what
+    #: turns line matching from fuzzy description comparison into an exact
+    #: lookup, so it is worth surfacing on the review screen.
+    raw_product_code: str | None = None
+    uom: str | None = None
     quantity: float | None = None
     unit_price: float | None = None
     amount: float | None = None

@@ -67,6 +67,9 @@ export interface InvoiceLine {
   id: string;
   line_no: number;
   raw_description: string;
+  /** SKU printed on the line — turns fuzzy line matching into an exact lookup. */
+  raw_product_code: string | null;
+  uom: string | null;
   quantity: number | null;
   unit_price: number | null;
   amount: number | null;

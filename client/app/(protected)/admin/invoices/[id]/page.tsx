@@ -190,7 +190,9 @@ export default function InvoiceReviewPage() {
                     <tr>
                       <th className="py-2 pr-4 font-medium">#</th>
                       <th className="py-2 pr-4 font-medium">Description</th>
+                      <th className="py-2 pr-4 font-medium">Code</th>
                       <th className="py-2 pr-4 text-right font-medium">Qty</th>
+                      <th className="py-2 pr-4 font-medium">UoM</th>
                       <th className="py-2 pr-4 text-right font-medium">Unit</th>
                       <th className="py-2 text-right font-medium">Subtotal</th>
                     </tr>
@@ -202,8 +204,14 @@ export default function InvoiceReviewPage() {
                         <td className="py-2 pr-4 text-slate-900 dark:text-slate-100">
                           {line.raw_description}
                         </td>
+                        <td className="py-2 pr-4 font-mono text-xs text-slate-600 dark:text-slate-400">
+                          {line.raw_product_code ?? "—"}
+                        </td>
                         <td className="py-2 pr-4 text-right tabular-nums">
                           {line.quantity ?? "—"}
+                        </td>
+                        <td className="py-2 pr-4 text-slate-600 dark:text-slate-400">
+                          {line.uom ?? "—"}
                         </td>
                         <td className="py-2 pr-4 text-right tabular-nums">
                           {money(line.unit_price)}

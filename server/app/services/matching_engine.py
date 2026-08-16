@@ -44,25 +44,45 @@ _LEGAL_SUFFIXES = {
     "trade", "general", "est", "establishment", "fzco", "fze", "fzc", "dmcc",
 }
 
-_NON_ALNUM = re.compile(r"[^a-z0-9\s]")
+# Unicode-aware. The obvious `[^a-z0-9\s]` is wrong for this data and fails
+# silently: it deletes every non-Latin character, so an Arabic vendor name
+# normalises to the empty string and scores zero on a component worth 30% —
+# with nothing in the logs to say why.
+#
+#   'مطعم 24 كارات'       ->  '24'   with [^a-z0-9]
+#   '株式会社テスト'         ->  ''     with [^a-z0-9]
+#
+# `\w` under re.UNICODE keeps letters in every script; only punctuation and
+# symbols are replaced.
+_PUNCTUATION = re.compile(r"[^\w\s]", re.UNICODE)
 _WHITESPACE = re.compile(r"\s+")
 
-#: A reference is compared on its digits and letters alone: "PO-2026-0089",
+#: A reference is compared on its alphanumerics alone: "PO-2026-0089",
 #: "PO 2026/0089" and "po20260089" are the same reference written three ways.
-_REF_NOISE = re.compile(r"[^a-z0-9]")
+_REF_NOISE = re.compile(r"[\W_]", re.UNICODE)
 
 
 def normalise_vendor(name: str | None) -> str:
-    """Lowercase, strip punctuation, drop legal-form words."""
+    """Casefold, strip punctuation, drop legal-form words. Script-agnostic.
+
+    `casefold`, not `lower`: it handles the cases `lower` does not — German ß
+    against SS, Turkish dotted/dotless I, Greek final sigma. A vendor whose
+    name round-trips through two systems can easily arrive in either form.
+
+    Accents are deliberately NOT stripped. "Grüne" and "Grune" both survive as
+    themselves, and rapidfuzz scores them as near-identical anyway — whereas
+    deleting the umlaut outright, as an ASCII filter does, turns "Früchte" into
+    "fr chte" and destroys the token.
+    """
     if not name:
         return ""
-    text = _NON_ALNUM.sub(" ", name.lower())
+    text = _PUNCTUATION.sub(" ", name.casefold())
     words = [w for w in _WHITESPACE.sub(" ", text).split() if w not in _LEGAL_SUFFIXES]
     return " ".join(words)
 
 
 def normalise_reference(ref: str | None) -> str:
-    return _REF_NOISE.sub("", ref.lower()) if ref else ""
+    return _REF_NOISE.sub("", ref.casefold()) if ref else ""
 
 
 # ---------------------------------------------------------------------------

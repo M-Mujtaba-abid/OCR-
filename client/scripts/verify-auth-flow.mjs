@@ -171,14 +171,36 @@ check("refresh returns NO user (bootstrap must call /me)", !refreshed.json?.data
 check("cookie rotated to a new value", cookie !== firstCookie);
 
 const stolen = firstCookie;
-const reuse = await fetch(`${BASE}/auth/refresh`, {
-  method: "POST",
-  headers: { Cookie: stolen, Origin: ORIGIN, Accept: "application/json" },
-}).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
-check("reused pre-rotation token → 401", reuse.status === 401);
+
+const replay = () =>
+  fetch(`${BASE}/auth/refresh`, {
+    method: "POST",
+    headers: { Cookie: stolen, Origin: ORIGIN, Accept: "application/json" },
+  }).then(async (r) => ({ status: r.status, json: await r.json().catch(() => null) }));
+
+// Immediately after rotation. This is what a double-firing client looks like,
+// and it must NOT cost the user every session they have.
+const immediate = await replay();
+check("token replayed immediately → 401", immediate.status === 401, `got ${immediate.status}`);
 check(
-  "reuse code is REFRESH_TOKEN_REUSED",
-  reuse.json?.error?.code === "REFRESH_TOKEN_REUSED",
+  "an immediate replay is a duplicate, not theft",
+  immediate.json?.error?.code === "INVALID_REFRESH_TOKEN",
+  immediate.json?.error?.code,
+);
+
+// Past the grace window the same replay is genuine reuse, and the response is
+// to revoke everything. Slow on purpose — this is the only way to cross the
+// window from outside the server.
+const GRACE_MS = 11_000;
+process.stdout.write(`  … waiting ${GRACE_MS / 1000}s to cross the reuse grace window\n`);
+await new Promise((r) => setTimeout(r, GRACE_MS));
+
+const late = await replay();
+check("token replayed after the window → 401", late.status === 401, `got ${late.status}`);
+check(
+  "a late replay IS reported as theft",
+  late.json?.error?.code === "REFRESH_TOKEN_REUSED",
+  late.json?.error?.code,
 );
 
 /* 7. logout ------------------------------------------------------------ */

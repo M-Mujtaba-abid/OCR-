@@ -156,7 +156,28 @@ class AuthService:
         # successor issued. The legitimate client would be holding that
         # successor, so whoever presented this one copied it. The safe response
         # is to sign every device out and force a fresh login.
+        #
+        # Except immediately after the rotation. A client that fired two
+        # refreshes at once — a retry, a double-click, two tabs waking together
+        # — has the loser arrive moments after the winner committed, and it
+        # looks identical to a replay from here. Treating that as theft signs
+        # an honest user out of every device for a double-click.
+        #
+        # Inside the grace window the loser is simply refused. It gets no
+        # session either way: the successor has already been issued to the
+        # request that won.
         if session.revoked_at is not None and session.was_rotated:
+            age = (dt.datetime.now(dt.UTC) - session.revoked_at).total_seconds()
+            if age <= settings.REFRESH_REUSE_GRACE_SECONDS:
+                logger.info(
+                    "refresh presented %.1fs after its own rotation — treating as a "
+                    "duplicate, not theft: user=%s session=%s",
+                    age,
+                    session.user_id,
+                    session.id,
+                )
+                raise InvalidRefreshTokenError("This token has already been used.")
+
             revoked = await self.sessions.revoke_all_for_user(session.user_id)
             await self.db.commit()
             logger.warning(

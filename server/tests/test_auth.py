@@ -200,10 +200,40 @@ async def test_refresh_rotates_the_cookie(client: AsyncClient, existing_user, pa
     assert second and second != first, "refresh must issue a NEW token"
 
 
-async def test_reused_refresh_token_detected_and_revokes_everything(
-    client: AsyncClient, existing_user, password
+async def test_immediate_replay_is_a_duplicate_not_theft(
+    client: AsyncClient, existing_user, password, monkeypatch
 ):
-    """The security property that makes rotation worth doing."""
+    """A double-firing client must not lose every session.
+
+    Two refreshes racing — a retry, a double-click, two tabs waking together —
+    put the loser on the wire moments after the winner rotated the token. From
+    the server that is indistinguishable from a replay, and treating it as
+    theft signs an honest user out everywhere.
+    """
+    monkeypatch.setattr(settings, "REFRESH_REUSE_GRACE_SECONDS", 30)
+
+    await login(client, existing_user.email, password)
+    stolen = client.cookies.get(COOKIE, path=settings.AUTH_COOKIE_PATH)
+    assert (await client.post("/api/v1/auth/refresh")).status_code == 200
+
+    client.cookies.set(COOKIE, stolen, path=settings.AUTH_COOKIE_PATH)
+    r = await client.post("/api/v1/auth/refresh")
+
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "INVALID_REFRESH_TOKEN"
+
+
+async def test_reused_refresh_token_detected_and_revokes_everything(
+    client: AsyncClient, existing_user, password, monkeypatch
+):
+    """The security property that makes rotation worth doing.
+
+    The grace window is switched off rather than waited out: this test is about
+    what happens to a genuinely stolen token, and sleeping ten seconds to prove
+    it would make the suite slower for no extra confidence.
+    """
+    monkeypatch.setattr(settings, "REFRESH_REUSE_GRACE_SECONDS", 0)
+
     await login(client, existing_user.email, password)
     stolen = client.cookies.get(COOKIE, path=settings.AUTH_COOKIE_PATH)
 
@@ -220,6 +250,20 @@ async def test_reused_refresh_token_detected_and_revokes_everything(
     # And the whole family is dead — the legitimate client's newer token too.
     r2 = await client.post("/api/v1/auth/refresh")
     assert r2.status_code == 401
+
+
+# NOTE: rotation being atomic under concurrency — exactly one winner out of N
+# parallel refreshes on the same token — is NOT tested here, and cannot be.
+#
+# The fixtures in conftest.py wrap each test in a savepoint that is rolled back
+# afterwards, so every request in a test shares one database transaction. The
+# conditional `UPDATE ... WHERE revoked_at IS NULL` that makes rotation atomic
+# relies on separate transactions contending for a row lock, and inside a single
+# transaction there is nothing to contend with. A test written here would pass
+# whether or not the claim existed, which is worse than no test.
+#
+# It is covered in client/scripts/verify-auth-flow.mjs, against a real server
+# with real connections, where the concurrency is real.
 
 
 async def test_refresh_without_cookie_rejected(client: AsyncClient):
