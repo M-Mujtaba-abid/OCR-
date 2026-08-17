@@ -88,6 +88,7 @@ _ITEM_DEFAULTS: dict[str, Any] = {
     "quantity": 0.0,
     "unit_price": 0.0,
     "subtotal": 0.0,
+    "tax": 0.0,
 }
 
 _EXTRACTION_DEFAULTS: dict[str, Any] = {
@@ -138,6 +139,14 @@ class ExtractedLineItem(BaseModel):
     subtotal: float = Field(
         description="Line total: quantity multiplied by unit_price."
     )
+    tax: float = Field(
+        description=(
+            "Tax charged on THIS line alone, as a number, when the document "
+            "prints tax per line. 0 when the document states tax only once for "
+            "the whole invoice — never divide the invoice's total tax across "
+            "the lines yourself."
+        )
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -146,7 +155,7 @@ class ExtractedLineItem(BaseModel):
             return {**_ITEM_DEFAULTS, **data}
         return data
 
-    @field_validator("quantity", "unit_price", "subtotal", mode="before")
+    @field_validator("quantity", "unit_price", "subtotal", "tax", mode="before")
     @classmethod
     def _numeric(cls, v: Any) -> float:
         return _coerce_float(v)

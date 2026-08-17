@@ -7,7 +7,6 @@ import { useParams } from "next/navigation";
 import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
 import { MatchCandidates } from "@/components/invoices/MatchCandidates";
 import { Alert } from "@/components/ui/Alert";
-import { Badge, Field } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import {
   useConfirmMatch,
@@ -18,7 +17,38 @@ import {
   useRunOcr,
 } from "@/hooks/invoice/useInvoices.hooks";
 import { money } from "@/lib/format";
-import { TRANSIENT_STATUSES } from "@/types/invoice.type";
+import { TRANSIENT_STATUSES, type InvoiceLine } from "@/types/invoice.type";
+
+/** Tax for each line, in the order the lines were given. */
+interface LineTax {
+  value: number;
+  /** True when the invoice taxed the total, not this line, and we spread it. */
+  allocated: boolean;
+}
+
+/**
+ * Tax per line, printed where the document prints it and allocated where it
+ * does not.
+ *
+ * Most invoices state tax once, at the bottom, so a column showing only what
+ * was printed per line would read 0.00 on nearly every document — and a
+ * reviewer comparing a line against a purchase order line, which in Odoo
+ * always carries its own tax, would have nothing to compare. The allocation is
+ * by share of line value, and every allocated figure is marked as such: it is
+ * this screen's arithmetic, not something the vendor wrote.
+ */
+function taxPerLine(lines: InvoiceLine[], invoiceTax: number | null): LineTax[] {
+  const base = lines.reduce((sum, line) => sum + (line.amount ?? 0), 0);
+  const total = invoiceTax ?? 0;
+
+  return lines.map((line) => {
+    if (line.tax_amount != null) return { value: line.tax_amount, allocated: false };
+    if (!total || base <= 0 || line.amount == null) {
+      return { value: 0, allocated: false };
+    }
+    return { value: (line.amount / base) * total, allocated: true };
+  });
+}
 
 export default function InvoiceReviewPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,7 +71,30 @@ export default function InvoiceReviewPage() {
   }
 
   const extracted = invoice.extracted_json;
+  const lineTax = taxPerLine(invoice.lines, invoice.extracted_tax);
   const working = TRANSIENT_STATUSES.has(invoice.status);
+
+  // Reference, date and email on one line. Absent fields are dropped rather
+  // than printed as em dashes: four empty tiles say nothing a reviewer needs.
+  const documentMeta =
+    [
+      extracted?.po_number ? `ref ${extracted.po_number}` : null,
+      extracted?.order_date,
+      extracted?.vendor_email,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "no reference, date or email printed";
+
+  // How the extraction was produced, not what the document says — so it sits
+  // beside the heading rather than among the document's own facts.
+  const readingCaption = [
+    invoice.page_count != null
+      ? `${invoice.page_count} page${invoice.page_count === 1 ? "" : "s"}`
+      : null,
+    invoice.ocr_model ? `read by ${invoice.ocr_model}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const busy =
     working || runOcr.isPending || runMatching.isPending || confirm.isPending;
 
@@ -124,9 +177,16 @@ export default function InvoiceReviewPage() {
 
       {/* --------------------------------------------------------- extraction */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-          What the document says
-        </h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+            What the document says
+          </h2>
+          {extracted && (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {readingCaption}
+            </p>
+          )}
+        </div>
 
         {!extracted ? (
           <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
@@ -136,49 +196,24 @@ export default function InvoiceReviewPage() {
           </p>
         ) : (
           <>
-            <dl className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <Field label="Vendor" value={extracted.vendor_name ?? "—"} />
-              <Field label="Reference" value={extracted.po_number ?? "—"} />
-              <Field label="Date" value={extracted.order_date ?? "—"} />
-              <Field label="Email" value={extracted.vendor_email ?? "—"} />
-              <Field
-                label="Untaxed"
-                value={money(extracted.untaxed_amount, extracted.currency)}
-              />
-              <Field
-                label="Tax"
-                value={money(extracted.tax_amount, extracted.currency)}
-              />
-              <Field
-                label="Total"
-                value={
-                  <span className="font-semibold">
-                    {money(extracted.total_amount, extracted.currency)}
-                  </span>
-                }
-              />
-              <Field label="Pages" value={invoice.page_count ?? "—"} />
-              <Field
-                label="Read by"
-                value={
-                  invoice.ocr_model ? (
-                    <Badge>{invoice.ocr_model}</Badge>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-            </dl>
-
+            {/* Laid out the way the document heads itself — vendor, then the
+                identifying details on one line. The same facts as a grid of
+                labelled tiles, but read in one pass instead of nine. */}
+            <p className="mt-4 text-base font-medium text-slate-900 dark:text-white">
+              {extracted.vendor_name ?? "Unnamed vendor"}
+            </p>
+            <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
+              {documentMeta}
+            </p>
             {extracted.vendor_address && (
-              <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
                 {extracted.vendor_address}
               </p>
             )}
 
             {invoice.lines.length > 0 && (
               <div className="mt-6 overflow-x-auto">
-                <table className="w-full min-w-[520px] text-left text-sm">
+                <table className="w-full min-w-[640px] text-left text-sm">
                   <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:text-slate-400">
                     <tr>
                       <th className="py-2 pr-4 font-medium">#</th>
@@ -187,11 +222,13 @@ export default function InvoiceReviewPage() {
                       <th className="py-2 pr-4 text-right font-medium">Qty</th>
                       <th className="py-2 pr-4 font-medium">UoM</th>
                       <th className="py-2 pr-4 text-right font-medium">Unit</th>
-                      <th className="py-2 text-right font-medium">Subtotal</th>
+                      <th className="py-2 pr-4 text-right font-medium">Subtotal</th>
+                      <th className="py-2 pr-4 text-right font-medium">Tax</th>
+                      <th className="py-2 text-right font-medium">Total</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                    {invoice.lines.map((line) => (
+                    {invoice.lines.map((line, index) => (
                       <tr key={line.id}>
                         <td className="py-2 pr-4 text-slate-500">{line.line_no}</td>
                         <td className="py-2 pr-4 text-slate-900 dark:text-slate-100">
@@ -209,15 +246,64 @@ export default function InvoiceReviewPage() {
                         <td className="py-2 pr-4 text-right tabular-nums">
                           {money(line.unit_price)}
                         </td>
-                        <td className="py-2 text-right tabular-nums">
+                        <td className="py-2 pr-4 text-right tabular-nums">
                           {money(line.amount)}
+                        </td>
+                        <td className="py-2 pr-4 text-right tabular-nums">
+                          {lineTax[index].allocated ? (
+                            <span
+                              className="text-slate-500 dark:text-slate-400"
+                              title="Allocated from the invoice's total tax — this document does not print tax per line."
+                            >
+                              ≈ {money(lineTax[index].value)}
+                            </span>
+                          ) : (
+                            money(line.tax_amount)
+                          )}
+                        </td>
+                        <td className="py-2 text-right font-medium tabular-nums">
+                          {line.amount == null
+                            ? "—"
+                            : money(line.amount + lineTax[index].value)}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+
+                {lineTax.some((tax) => tax.allocated) && (
+                  <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                    ≈ This invoice states tax once for the whole document, so it
+                    is shown here spread across the lines by share of value.
+                  </p>
+                )}
               </div>
             )}
+
+            {/* The document's own totals, once, where an invoice prints them —
+                under the lines rather than repeated in a header grid. */}
+            <div className="mt-4 flex justify-end">
+              <dl className="w-full max-w-[15rem] space-y-1 text-sm">
+                <div className="flex justify-between gap-6">
+                  <dt className="text-slate-600 dark:text-slate-400">Untaxed</dt>
+                  <dd className="tabular-nums text-slate-900 dark:text-slate-100">
+                    {money(extracted.untaxed_amount, extracted.currency)}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-6">
+                  <dt className="text-slate-600 dark:text-slate-400">Tax</dt>
+                  <dd className="tabular-nums text-slate-900 dark:text-slate-100">
+                    {money(extracted.tax_amount, extracted.currency)}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-6 border-t border-slate-200 pt-1 font-semibold dark:border-slate-800">
+                  <dt className="text-slate-900 dark:text-white">Total</dt>
+                  <dd className="tabular-nums text-slate-900 dark:text-white">
+                    {money(extracted.total_amount, extracted.currency)}
+                  </dd>
+                </div>
+              </dl>
+            </div>
           </>
         )}
       </section>

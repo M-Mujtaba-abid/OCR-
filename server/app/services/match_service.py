@@ -50,6 +50,10 @@ were pre-filtered by a scoring pass. Each candidate carries that pass's score
 and its breakdown, which you may use as a prior but must not treat as the
 answer — the scores are a heuristic and you can see things they cannot.
 
+`prefilter` is that pass's score breakdown, written compactly: `v` vendor,
+`a` amount, `r` reference, `d` date, `l` line items, each 0-100. A component
+that could not be evaluated is absent rather than zero.
+
 Weigh the evidence in roughly this order:
 
 1. An explicit reference match. A vendor quoting the PO number is stating the
@@ -69,6 +73,12 @@ Rules:
   costs an accountant far more time than no match does.
 - A partial delivery — the invoice covering some of an order's lines — is still
   a match to that order. Say so in the reasoning.
+- `invoice_status` tells you whether Odoo still expects a bill for the order.
+  "invoiced" means one already exists. That does NOT disqualify the order — a
+  vendor may be billing late, re-sending, or double-billing — so judge it on
+  the evidence like any other candidate, and when you choose one, state
+  plainly in the reasoning that a bill already exists and this may be a
+  duplicate.
 - Be conservative with confidence. Reserve above 90 for a reference match or an
   otherwise unambiguous case.
 """
@@ -108,12 +118,101 @@ async def run_matching_for_invoice(invoice_id: uuid.UUID) -> None:
             await _fail(db, repo, invoice, "An unexpected error occurred while matching.")
 
 
+async def _orders_to_consider(
+    extraction: InvoiceExtraction,
+) -> list[OdooPurchaseOrder]:
+    """The orders this invoice is scored against.
+
+    The billable ones, plus — within a window around the invoice's own date —
+    the ones Odoo has already invoiced.
+
+    That second group is not optional. Odoo flips `invoice_status` to
+    "invoiced" the moment a bill exists, so an invoice arriving after that
+    scored against the billable set alone finds nothing, and the review screen
+    reports "no purchase order scored highly enough" while the right order sits
+    in Odoo scoring in the nineties. Filtering before scoring turns "already
+    billed" into "does not exist", and those need very different answers from a
+    reviewer — the second is a missing order, the first is a possible duplicate
+    bill.
+
+    They are scored, never preferred: `invoice_status` travels with each
+    candidate so the model and the screen can both say what they are looking at.
+    """
+    orders = await odoo_service.fetch_open_purchase_orders()
+
+    lookback = settings.MATCH_CLOSED_LOOKBACK_DAYS
+    if lookback <= 0:
+        return orders
+
+    # Anchored to the invoice's date when it has one — an invoice dated four
+    # months ago should look four months back, not ninety days from today.
+    anchor = extraction.order_date_value or dt.date.today()
+    billed = await odoo_service.fetch_recently_billed_orders(
+        since=anchor - dt.timedelta(days=lookback)
+    )
+
+    seen = {order.id for order in orders}
+    orders.extend(order for order in billed if order.id not in seen)
+    return orders
+
+
+def _shortlist_for_prompt(
+    candidates: list[matching_engine.ScoredCandidate],
+) -> list[matching_engine.ScoredCandidate]:
+    """The candidates worth paying to describe to the model.
+
+    Distinct from the shortlist itself, which the review screen keeps in full —
+    "was the right order even considered?" is the question the stored losers
+    exist to answer, and answering it costs nothing. The prompt is a different
+    question: a candidate 25 points behind the leader is not what the model
+    picks, it is only what the model is billed for.
+
+    Self-adjusting, which is the point. Where the top of the list is tied
+    nothing is trimmed and the full spend happens on the decision that needs
+    it; where one candidate is far ahead the prompt collapses to the floor.
+    """
+    leader = candidates[0].score
+    kept = [c for c in candidates if c.score >= leader - settings.MATCH_PROMPT_MARGIN]
+    if len(kept) >= settings.MATCH_PROMPT_MIN:
+        return kept
+    # A shortlist of one is a decision already taken — the model cannot
+    # disagree with a choice it was never offered.
+    return candidates[: settings.MATCH_PROMPT_MIN]
+
+
+def _beyond_argument(
+    candidates: list[matching_engine.ScoredCandidate],
+) -> matching_engine.ScoredCandidate | None:
+    """The candidate whose case the model could only agree with, if there is one.
+
+    Deliberately narrow. The gate is an EXACT reference match — the vendor
+    quoting the order's own number, which the prompt itself calls stating the
+    answer — and not the 85-point containment hit, which is a resemblance.
+    On top of that, a high score and clear daylight to the runner-up.
+
+    An already-invoiced order never qualifies however well it scores: that is
+    the possible-duplicate case, and it is exactly the one worth a second
+    opinion before anybody is asked to confirm it.
+    """
+    leader = candidates[0]
+    runner_up = candidates[1].score if len(candidates) > 1 else 0.0
+
+    if (
+        leader.breakdown.get("reference") == 100.0
+        and leader.score >= settings.MATCH_AUTO_ACCEPT_SCORE
+        and leader.score - runner_up >= settings.MATCH_AUTO_ACCEPT_MARGIN
+        and leader.order.invoice_status != "invoiced"
+    ):
+        return leader
+    return None
+
+
 async def _match(
     db: AsyncSession, repo: MatchHistoryRepository, invoice: MatchHistory
 ) -> None:
     extraction = InvoiceExtraction.model_validate(invoice.extracted_json)
 
-    orders = await odoo_service.fetch_open_purchase_orders()
+    orders = await _orders_to_consider(extraction)
     candidates = matching_engine.rank(
         extraction,
         orders,
@@ -131,14 +230,39 @@ async def _match(
             invoice,
             candidates=[],
             reasoning=(
-                f"None of the {len(orders)} open purchase orders scored above "
-                f"the {settings.MATCH_SCORE_FLOOR:.0f} threshold."
+                f"None of the {len(orders)} purchase orders considered — open "
+                f"and already billed — scored above the "
+                f"{settings.MATCH_SCORE_FLOOR:.0f} threshold."
             ),
             strategy="no_candidates",
         )
         return
 
-    verdict = await _rerank(extraction, candidates)
+    settled = _beyond_argument(candidates)
+    if settled is not None:
+        # No request is made. Everything after this point runs exactly as it
+        # does for a model verdict — the same id guard, the same persistence,
+        # the same review screen — so the only difference is the bill.
+        verdict = MatchVerdict(
+            matched_po_id=settled.order.id,
+            confidence=round(settled.score, 1),
+            reasoning=(
+                "Matched without asking the model: the invoice quotes this "
+                "order's reference exactly, and no other candidate comes "
+                "close.\n\n" + "\n".join(settled.notes)
+            ),
+            alternatives=[],
+        )
+        strategy = "prefilter_exact_reference"
+        logger.info(
+            "Invoice %s: %s settled it without a rerank call (score %.1f)",
+            invoice.id,
+            settled.order.name,
+            settled.score,
+        )
+    else:
+        verdict = await _rerank(extraction, candidates)
+        strategy = "llm_rerank"
 
     # The guard that makes the LLM's answer safe to store. A model will
     # occasionally return an id that looks right and was never in the prompt;
@@ -170,7 +294,7 @@ async def _match(
             )
         await _record_no_match(
             db, repo, invoice, candidates=candidates, reasoning=reason,
-            strategy="llm_rerank", confidence=verdict.confidence,
+            strategy=strategy, confidence=verdict.confidence,
         )
         return
 
@@ -180,7 +304,10 @@ async def _match(
         matched_po_id=chosen.id,
         matched_po_name=chosen.name,
         confidence_score=verdict.confidence,
-        match_strategy="llm_rerank",
+        # Recorded so these are countable later: if the corrected rate on
+        # `prefilter_exact_reference` is not zero, the thresholds were wrong
+        # and the data will say so rather than nobody noticing.
+        match_strategy=strategy,
         match_reasoning=verdict.reasoning,
         candidates=_candidates_payload(candidates, verdict),
     )
@@ -209,7 +336,12 @@ async def _rerank(
     extraction: InvoiceExtraction,
     candidates: list[matching_engine.ScoredCandidate],
 ) -> MatchVerdict:
-    """Ask the model to choose. Returns a validated verdict."""
+    """Ask the model to choose. Returns a validated verdict.
+
+    Only the candidates the decision can turn on are described — see
+    `_shortlist_for_prompt`. The full ranked list still reaches the audit blob.
+    """
+    shortlist = _shortlist_for_prompt(candidates)
     payload = {
         "invoice": {
             "vendor_name": extraction.vendor_name,
@@ -232,11 +364,16 @@ async def _rerank(
         },
         "candidates": [
             {
-                **c.order.for_prompt(),
-                "prefilter_score": round(c.score, 1),
-                "prefilter_breakdown": {k: round(v) for k, v in c.breakdown.items()},
+                **c.order.for_prompt(item_limit=settings.MATCH_PROMPT_ITEM_CAP),
+                "score": round(c.score, 1),
+                # "v34 a0 d100 l0" rather than a five-key object: the same
+                # numbers at a third of the characters, billed once per
+                # candidate. The legend is in RERANK_PROMPT, billed once.
+                "prefilter": " ".join(
+                    f"{name[0]}{round(value)}" for name, value in c.breakdown.items()
+                ),
             }
-            for c in candidates
+            for c in shortlist
         ],
     }
 

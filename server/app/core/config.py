@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: SecretStr = SecretStr("")
     MISTRAL_OCR_MODEL: str = "mistral-ocr-latest"
     MISTRAL_CHAT_MODEL: str = "mistral-large-latest"
+    # The reranker's model, separately settable.
+    #
+    # It shared MISTRAL_CHAT_MODEL with the extraction fallback, which meant a
+    # cheaper model could not be tried on the one job suited to it — picking
+    # between a handful of scored candidates — without also degrading the job
+    # that reads a document from scratch. Empty means "same as the chat model",
+    # so nothing changes until somebody deliberately measures an alternative.
+    MISTRAL_RERANK_MODEL: str = ""
 
     # The kill switch. Every upload costs money once OCR runs automatically;
     # flipping this to false reverts to admin-triggered processing without a
@@ -141,10 +149,18 @@ class Settings(BaseSettings):
     # every deployment's definition of "still open" differs — some invoice off
     # 'done' orders, some never leave 'purchase'.
     ODOO_PO_STATES: Annotated[list[str], NoDecode] = ["purchase", "done"]
-    ODOO_PO_INVOICE_STATUS: str = "to invoice"
+    #: Which orders are still billable. A list, not one value: a deployment may
+    #: legitimately consider both "to invoice" and "no" open for matching.
+    ODOO_PO_INVOICE_STATUSES: Annotated[list[str], NoDecode] = ["to invoice"]
     # A ceiling on one fetch. Matching narrows candidates locally anyway, and an
     # unbounded search_read against a large Odoo is how a request times out.
     ODOO_PO_FETCH_LIMIT: int = Field(default=500, ge=1, le=5000)
+    # How long a fetch's result is reused. A twenty-file upload otherwise runs
+    # twenty identical reads of several hundred orders and a thousand lines,
+    # serially, against the same Odoo. Nobody bills for that, but the queue
+    # waits for it. Short enough that an order created moments ago is not one
+    # anybody is billing yet; 0 disables the cache.
+    ODOO_FETCH_CACHE_SECONDS: int = Field(default=60, ge=0, le=3600)
 
     # A JSON file of purchase orders to use INSTEAD of a live Odoo.
     #
@@ -163,6 +179,47 @@ class Settings(BaseSettings):
     MATCH_SCORE_FLOOR: float = Field(default=35.0, ge=0, le=100)
     # Below this the verdict is recorded as no_match rather than a weak guess.
     MATCH_MIN_CONFIDENCE: float = Field(default=70.0, ge=0, le=100)
+    # How far back to also consider orders Odoo has ALREADY billed.
+    #
+    # Without this the correct order simply vanishes whenever Odoo has marked
+    # it invoiced, and the screen reports "no match" — indistinguishable from
+    # the order not existing. Vendors bill late and bill twice, so an
+    # already-invoiced order matching an incoming invoice is not noise: it is
+    # the duplicate-billing case, and it has to be visible to be caught.
+    #
+    # A window rather than the whole history: an Odoo with tens of thousands of
+    # closed orders would otherwise be pulled into every match for nothing.
+    # Set to 0 to switch the sweep off entirely.
+    MATCH_CLOSED_LOOKBACK_DAYS: int = Field(default=90, ge=0, le=3650)
+
+    # ------------------------------------------------------- prompt economy
+    # What the model is actually shown. The shortlist above is what the REVIEW
+    # SCREEN keeps — every candidate considered, which is what makes a wrong
+    # match arguable afterwards. These decide which of them are worth paying
+    # tokens to describe, and the two are not the same question.
+    #
+    # A candidate 25 points below the leader is not what the model picks; it is
+    # only billed for. Where the top of the list is genuinely tied nothing is
+    # trimmed, so the spend follows the difficulty of the decision.
+    MATCH_PROMPT_MARGIN: float = Field(default=25.0, ge=0, le=100)
+    # Never describe fewer than this, however far ahead the leader is. A
+    # shortlist of one is a decision already made, and the model cannot
+    # disagree with a choice it was not offered.
+    MATCH_PROMPT_MIN: int = Field(default=5, ge=1, le=50)
+    # Line rows per candidate in the prompt. The line-item SCORE is computed in
+    # code over every line and travels in the breakdown; these rows exist so the
+    # model can judge whether the goods are the same, which twelve answer as
+    # well as twenty-five.
+    MATCH_PROMPT_ITEM_CAP: int = Field(default=12, ge=1, le=100)
+
+    # When the prefilter's answer is beyond argument, the model is not asked.
+    #
+    # Deliberately strict: it requires the vendor to have quoted the order's
+    # reference EXACTLY — the one signal that states the answer outright — plus
+    # a score this high and a gap this wide. Set the score above 100 to switch
+    # the fast path off entirely.
+    MATCH_AUTO_ACCEPT_SCORE: float = Field(default=95.0, ge=0, le=101)
+    MATCH_AUTO_ACCEPT_MARGIN: float = Field(default=20.0, ge=0, le=100)
 
     @field_validator("R2_PUBLIC_URL", "R2_ACCOUNT_ID", "R2_BUCKET_NAME", mode="after")
     @classmethod
@@ -171,7 +228,7 @@ class Settings(BaseSettings):
         # produce "https://files.example.com//invoices/...".
         return v.strip().rstrip("/")
 
-    @field_validator("ODOO_PO_STATES", mode="before")
+    @field_validator("ODOO_PO_STATES", "ODOO_PO_INVOICE_STATUSES", mode="before")
     @classmethod
     def _parse_po_states(cls, v: Any) -> list[str]:
         # Same comma-or-JSON handling as CORS_ORIGINS, for the same reason:

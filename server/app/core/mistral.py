@@ -226,13 +226,20 @@ async def complete_json(
     user_content: str,
     schema_model: type[BaseModel],
 ) -> dict[str, Any]:
-    """A structured chat completion. Used by the matching reranker."""
+    """A structured chat completion. Used by the matching reranker.
+
+    Runs on `MISTRAL_RERANK_MODEL` when one is set. Choosing between a handful
+    of already-scored candidates is a far narrower job than reading a document
+    from scratch, so it is worth being able to move this one alone — but the
+    default is the same model as before, because a cheaper model that has not
+    been measured on real invoices is a saving of unknown price.
+    """
     client = get_mistral_client()
 
     try:
         response = await _call_chat(
             client,
-            model=settings.MISTRAL_CHAT_MODEL,
+            model=settings.MISTRAL_RERANK_MODEL or settings.MISTRAL_CHAT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},

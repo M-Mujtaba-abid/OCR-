@@ -287,6 +287,11 @@ async def _replace_lines(
             quantity=item.quantity or None,
             unit_price=item.unit_price or None,
             amount=item.subtotal or None,
+            # Only what the document printed against the line. Invoices that
+            # state tax once at the bottom leave this null, and the review
+            # screen allocates it there — where it can be labelled as derived
+            # rather than stored as though it had been read off the page.
+            tax_amount=item.tax or None,
             status=LineMatchStatus.PENDING,
             source="pending",
         )

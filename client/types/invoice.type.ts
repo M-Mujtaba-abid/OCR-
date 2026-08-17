@@ -47,6 +47,8 @@ export interface ExtractedLineItem {
   quantity: number;
   unit_price: number;
   subtotal: number;
+  /** Tax printed against this line. 0 when the document taxes only the total. */
+  tax: number;
 }
 
 export interface ExtractedInvoice {
@@ -73,6 +75,8 @@ export interface InvoiceLine {
   quantity: number | null;
   unit_price: number | null;
   amount: number | null;
+  /** Tax printed against this line. Null when the invoice taxes only the total. */
+  tax_amount: number | null;
   matched_product_id: number | null;
   matched_product_name: string | null;
   confidence: number | null;
@@ -109,6 +113,8 @@ export interface MatchCandidate {
      of them. Re-running the match on such an invoice fills them in. */
   vendor_ref?: string | null;
   currency?: string | null;
+  /** Odoo's billing state: "invoiced" means a bill for this order exists. */
+  invoice_status?: string | null;
   /** The order's true line count — `items` may be capped below it. */
   line_count?: number;
   items?: MatchCandidateLine[];

@@ -94,6 +94,18 @@ class TestNormalisation:
     def test_different_vendors_stay_different(self) -> None:
         assert normalise_vendor("Acme Tools") != normalise_vendor("Beta Supplies")
 
+    @pytest.mark.parametrize(
+        "written",
+        ["AJK Restaurants", "A J K Restaurants", "A.J.K. Restaurants"],
+    )
+    def test_spaced_initials_are_the_same_company(self, written: str) -> None:
+        """Odoo spells the initialism out; the vendor's paper rarely does."""
+        assert normalise_vendor(written) == "ajk restaurants"
+
+    def test_a_leading_article_is_not_an_initialism(self) -> None:
+        """Only runs of single characters join — ordinary words stay apart."""
+        assert normalise_vendor("A Fresh Produce") == "a fresh produce"
+
     def test_blank_vendor_is_empty(self) -> None:
         assert normalise_vendor(None) == ""
         assert normalise_vendor("   ") == ""
@@ -176,6 +188,25 @@ class TestAmountBands:
             make_invoice(), make_order(amount_untaxed=order_amount)
         )
         assert result.breakdown["amount"] >= minimum
+
+    def test_an_empty_order_does_not_beat_a_wrong_one(self) -> None:
+        """A 0.00 order is a disagreement, not a component to skip.
+
+        Dropping it renormalised the empty order back up — an unrelated order
+        for 0.00 outscored the orders with the right vendor, and led the
+        shortlist with nothing to be wrong about.
+        """
+        invoice = make_invoice(po_number=None)  # as handwritten notes arrive
+        empty = score_candidate(
+            invoice,
+            make_order(
+                partner_name="Other Trading", amount_untaxed=0.0, amount_total=0.0
+            ),
+        )
+        right_vendor = score_candidate(invoice, make_order(amount_untaxed=9999.0))
+
+        assert empty.breakdown["amount"] == 0.0
+        assert empty.score < right_vendor.score
 
     def test_wildly_different_amount_scores_zero(self) -> None:
         result = score_candidate(make_invoice(), make_order(amount_untaxed=99_999.0))
@@ -391,3 +422,10 @@ class TestCandidateLineItems:
 
         assert payload["currency"] == "AED"
         assert payload["vendor_ref"] == "INV-77"
+
+    def test_billing_state_reaches_the_screen(self) -> None:
+        """An already-billed candidate is badged, so it must survive to JSON."""
+        order = make_order(invoice_status="invoiced")
+        payload = score_candidate(make_invoice(), order).to_json()
+
+        assert payload["invoice_status"] == "invoiced"

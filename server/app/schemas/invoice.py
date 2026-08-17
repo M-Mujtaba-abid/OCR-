@@ -67,6 +67,9 @@ class InvoiceLineRead(BaseModel):
     quantity: float | None = None
     unit_price: float | None = None
     amount: float | None = None
+    #: Tax printed against this line. Null on the many invoices that state tax
+    #: once for the whole document rather than per line.
+    tax_amount: float | None = None
     matched_product_id: int | None = None
     matched_product_name: str | None = None
     confidence: float | None = None

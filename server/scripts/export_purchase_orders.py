@@ -42,7 +42,7 @@ async def main() -> int:
     if args.all:
         # Reaches past the "awaiting a bill" filter. Useful for seeing the whole
         # picture; not what matching should normally consider.
-        settings.ODOO_PO_INVOICE_STATUS = "no"
+        settings.ODOO_PO_INVOICE_STATUSES = ["to invoice", "invoiced", "no"]
 
     orders = await odoo_service.fetch_open_purchase_orders(limit=args.limit)
 

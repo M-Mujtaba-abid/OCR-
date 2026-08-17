@@ -61,6 +61,11 @@ _WHITESPACE = re.compile(r"\s+")
 #: "PO 2026/0089" and "po20260089" are the same reference written three ways.
 _REF_NOISE = re.compile(r"[\W_]", re.UNICODE)
 
+#: A run of single-character tokens — an initialism someone spelled out with
+#: spaces. Odoo holds "A J K Restaurants Management", the vendor's own paper
+#: says "AJK Restaurants", and left apart those score 85 instead of 100.
+_SPACED_INITIALS = re.compile(r"\b(?:\w\s+)+\w\b", re.UNICODE)
+
 
 def normalise_vendor(name: str | None) -> str:
     """Casefold, strip punctuation, drop legal-form words. Script-agnostic.
@@ -78,7 +83,9 @@ def normalise_vendor(name: str | None) -> str:
         return ""
     text = _PUNCTUATION.sub(" ", name.casefold())
     words = [w for w in _WHITESPACE.sub(" ", text).split() if w not in _LEGAL_SUFFIXES]
-    return " ".join(words)
+    # Last, so it sees the text with punctuation already gone: "A.J.K." and
+    # "A J K" both arrive here as "a j k" and leave as "ajk".
+    return _SPACED_INITIALS.sub(lambda m: m.group(0).replace(" ", ""), " ".join(words))
 
 
 def normalise_reference(ref: str | None) -> str:
@@ -115,6 +122,10 @@ class ScoredCandidate:
             "amount_untaxed": round(self.order.amount_untaxed, 2),
             "amount_total": round(self.order.amount_total, 2),
             "currency": self.order.currency,
+            # "invoiced" means Odoo already has a bill for this order. The
+            # review screen badges it, because confirming such a match is how
+            # a vendor gets paid twice.
+            "invoice_status": self.order.invoice_status,
             "order_date": (
                 self.order.date_order.isoformat() if self.order.date_order else None
             ),
@@ -157,11 +168,20 @@ def _score_amount(
     withholding — while the value of the goods does not.
     """
     invoice_amount = invoice.untaxed_amount or invoice.total_amount
-    order_amount = order.amount_untaxed or order.amount_total
-    if not invoice_amount or not order_amount:
+    if not invoice_amount:
+        # Nothing was printed to compare against. That is missing data, and a
+        # component that cannot be evaluated is dropped, not scored zero.
         return None
 
-    delta = abs(order_amount - invoice_amount) / max(order_amount, 1e-9)
+    order_amount = order.amount_untaxed or order.amount_total
+    # An order totalling zero is NOT missing data — it is a real disagreement
+    # with an invoice that has a value, and dropping it rewarded emptiness: a
+    # 0.00 order was renormalised back up to 56 and outranked the orders with
+    # the right vendor on 41, purely by having nothing to be wrong about.
+    #
+    # Denominated by the larger of the two, so the measure is symmetric: an
+    # order half the invoice's size is 50% apart either way round.
+    delta = abs(order_amount - invoice_amount) / max(order_amount, invoice_amount, 1e-9)
 
     # Bands, not a linear falloff. A 0.4% difference is rounding; a 9%
     # difference is a different order, and the gap between them should not be

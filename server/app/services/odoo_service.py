@@ -14,9 +14,11 @@ read in one call instead.
 
 from __future__ import annotations
 
+import datetime as dt
 import functools
 import json
 import threading
+import time
 import xmlrpc.client
 from pathlib import Path
 from typing import Any
@@ -194,6 +196,47 @@ async def _run(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Fetch cache
+# ---------------------------------------------------------------------------
+# A twenty-file upload matches twenty invoices against the same Odoo, seconds
+# apart, and each one re-read several hundred orders and a thousand lines. The
+# orders had not changed between the first file and the twentieth; the queue
+# simply waited for the same answer twenty times.
+#
+# Monotonic clock, not wall time: a clock adjustment must not make an entry
+# look hours old or immortal.
+_cache: dict[tuple[Any, ...], tuple[float, list[OdooPurchaseOrder]]] = {}
+_cache_lock = threading.Lock()
+
+
+def _cached(key: tuple[Any, ...]) -> list[OdooPurchaseOrder] | None:
+    ttl = settings.ODOO_FETCH_CACHE_SECONDS
+    if ttl <= 0:
+        return None
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry is None or time.monotonic() - entry[0] > ttl:
+            return None
+        # A copy: callers attach lines and are free to mutate what they get,
+        # and a shared list would carry one invoice's changes into the next.
+        logger.debug("Odoo fetch served from cache (%s)", key[0])
+        return list(entry[1])
+
+
+def _remember(key: tuple[Any, ...], orders: list[OdooPurchaseOrder]) -> None:
+    if settings.ODOO_FETCH_CACHE_SECONDS <= 0:
+        return
+    with _cache_lock:
+        _cache[key] = (time.monotonic(), list(orders))
+
+
+def clear_fetch_cache() -> None:
+    """Forget every cached fetch. For tests and for a forced refresh."""
+    with _cache_lock:
+        _cache.clear()
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def _load_fixture() -> list[OdooPurchaseOrder]:
@@ -276,10 +319,15 @@ class OdooService:
         if settings.uses_odoo_fixture:
             return _load_fixture()[: limit or settings.ODOO_PO_FETCH_LIMIT]
 
+        key = ("open", limit or settings.ODOO_PO_FETCH_LIMIT)
+        hit = _cached(key)
+        if hit is not None:
+            return hit
+
         client = _get_client()
         domain: list[Any] = [
             ("state", "in", list(settings.ODOO_PO_STATES)),
-            ("invoice_status", "=", settings.ODOO_PO_INVOICE_STATUS),
+            ("invoice_status", "in", list(settings.ODOO_PO_INVOICE_STATUSES)),
         ]
 
         rows: list[dict[str, Any]] = await _run(
@@ -300,6 +348,63 @@ class OdooService:
             len(orders),
             sum(len(o.lines) for o in orders),
         )
+        _remember(key, orders)
+        return orders
+
+    async def fetch_recently_billed_orders(
+        self, *, since: dt.date, limit: int | None = None
+    ) -> list[OdooPurchaseOrder]:
+        """Orders Odoo no longer considers billable, back to `since`.
+
+        The complement of `fetch_open_purchase_orders`: same states, but every
+        invoice_status the open fetch excludes.
+
+        This exists because excluding them outright made the system lie. A
+        vendor billing for an order Odoo has already invoiced — a late bill, a
+        re-send, a genuine duplicate — produced an empty candidate list and the
+        message "no purchase order scored highly enough", when the order was
+        sitting in Odoo scoring in the nineties. Nobody can act on a match that
+        was filtered out before it was scored.
+
+        Bounded by a date window rather than fetched wholesale: closed orders
+        outnumber open ones by orders of magnitude, and an invoice arriving
+        years after its order is not the case worth paying for on every match.
+        """
+        if settings.uses_odoo_fixture:
+            # The fixture is the open set by definition — it has no history.
+            return []
+
+        key = ("billed", since, limit or settings.ODOO_PO_FETCH_LIMIT)
+        hit = _cached(key)
+        if hit is not None:
+            return hit
+
+        client = _get_client()
+        domain: list[Any] = [
+            ("state", "in", list(settings.ODOO_PO_STATES)),
+            ("invoice_status", "not in", list(settings.ODOO_PO_INVOICE_STATUSES)),
+            ("date_order", ">=", since.isoformat()),
+        ]
+
+        rows: list[dict[str, Any]] = await _run(
+            client.execute,
+            "purchase.order",
+            "search_read",
+            domain,
+            fields=PO_FIELDS,
+            limit=limit or settings.ODOO_PO_FETCH_LIMIT,
+            order="date_order desc",
+        )
+
+        orders = [OdooPurchaseOrder.from_odoo(row) for row in rows]
+        await self._attach_lines(client, orders, rows)
+
+        logger.info(
+            "Fetched %d already-billed purchase order(s) dated on or after %s",
+            len(orders),
+            since.isoformat(),
+        )
+        _remember(key, orders)
         return orders
 
     async def _attach_lines(

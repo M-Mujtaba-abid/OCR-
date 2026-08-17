@@ -168,14 +168,18 @@ class OdooPurchaseOrder(BaseModel):
             for line in self.lines[:limit]
         ]
 
-    def for_prompt(self) -> dict[str, Any]:
+    def for_prompt(self, *, item_limit: int = LINE_PROJECTION_CAP) -> dict[str, Any]:
         """A compact projection for the LLM.
 
         Trimmed on purpose: every token in the prompt is billed, and fields the
         model cannot use to decide — internal ids beyond the one it must return,
         Odoo state machinery — only give it more to be confused by.
+
+        Absent fields are omitted rather than sent as null. `"vendor_ref": null`
+        is billed on every candidate to say nothing; a missing key says the same
+        thing for free, and the model reads it the same way.
         """
-        return {
+        projection: dict[str, Any] = {
             "po_id": self.id,
             "po_number": self.name,
             "vendor": self.partner_name,
@@ -184,6 +188,10 @@ class OdooPurchaseOrder(BaseModel):
             "amount_untaxed": round(self.amount_untaxed, 2),
             "amount_total": round(self.amount_total, 2),
             "currency": self.currency,
+            # Whether Odoo still expects a bill for this order. Kept despite
+            # the trimming above: an order that is already invoiced can still
+            # be the right one, and the model has to be able to say so.
+            "invoice_status": self.invoice_status,
             "items": [
                 {
                     "name": line.product_name or line.name,
@@ -194,6 +202,7 @@ class OdooPurchaseOrder(BaseModel):
                 # Deliberately leaner than `line_items` — the model does not
                 # need per-line tax to pick an order, and every field here is
                 # billed once per candidate.
-                for line in self.lines[:LINE_PROJECTION_CAP]
+                for line in self.lines[:item_limit]
             ],
         }
+        return {k: v for k, v in projection.items() if v is not None and v != []}

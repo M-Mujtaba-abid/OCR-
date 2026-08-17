@@ -123,6 +123,7 @@ function CandidateRow({
   // Candidates matched before line details were stored carry no items at all,
   // so this is a missing-data case rather than an empty order.
   const items = candidate.items ?? [];
+  const alreadyBilled = candidate.invoice_status === "invoiced";
 
   return (
     <li
@@ -141,6 +142,10 @@ function CandidateRow({
             </p>
             {isChosen && <Badge tone="accent">Suggested</Badge>}
             {isFinal && <Badge tone="positive">Confirmed</Badge>}
+            {/* Odoo already has a bill for this order. Confirming it anyway is
+                how a vendor gets paid twice, so it is stated on the card
+                rather than left to whoever thinks to check Odoo. */}
+            {alreadyBilled && <Badge tone="warning">Already invoiced</Badge>}
           </div>
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
             {candidate.vendor ?? "—"}
@@ -237,6 +242,13 @@ function CandidateRow({
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
           <span className="font-medium">Not chosen:</span>{" "}
           {candidate.rejected_because}
+        </p>
+      )}
+
+      {alreadyBilled && (
+        <p className="mt-2 text-sm text-amber-700 dark:text-amber-400">
+          Odoo already has a bill for this order. If this invoice is the same
+          one, confirming it would pay the vendor twice.
         </p>
       )}
 
