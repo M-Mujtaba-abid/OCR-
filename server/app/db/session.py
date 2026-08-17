@@ -28,7 +28,17 @@ _statement_cache_size = 0 if settings.is_pooled else 100
 engine: AsyncEngine = create_async_engine(
     settings.async_dsn,
     echo=settings.DEBUG,
-    pool_pre_ping=True,      # Neon scales to zero; this discards dead connections
+    # Off by default, and measured rather than assumed: against this Neon
+    # instance a pre-ping cost ~1.9 SECONDS per request (4,797 ms vs 2,877 ms
+    # for the same three queries). It is not the ping itself — the ping finds
+    # an idle connection Neon has dropped and transparently rebuilds it, TLS
+    # handshake and all, on requests that would otherwise have been fine.
+    #
+    # `pool_recycle` below is what replaces it: SQLAlchemy checks a connection's
+    # AGE at checkout and discards an old one without touching the network, so
+    # the dead-connection case is handled locally instead of at 500 ms a time.
+    # Set DB_POOL_PRE_PING=true to put it back without a code change.
+    pool_pre_ping=settings.DB_POOL_PRE_PING,
     pool_size=5,
     max_overflow=10,
     pool_recycle=300,        # recycle before Neon's idle timeout closes them

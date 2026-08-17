@@ -244,14 +244,13 @@ class InvoiceService:
         page_size: int = 20,
         status: InvoiceStatus | None = None,
     ) -> tuple[list[MatchHistory], int]:
-        items = await self.invoices.list_for_user(
+        # Rows and total in one statement — see `_page_query`.
+        return await self.invoices.list_for_user(
             user.id,
             limit=page_size,
             offset=(page - 1) * page_size,
             status=status,
         )
-        total = await self.invoices.count(user_id=user.id, status=status)
-        return items, total
 
     async def list_all(
         self,
@@ -263,7 +262,10 @@ class InvoiceService:
         uploaded_by: uuid.UUID | None = None,
         tenant_id: str = "default",
     ) -> tuple[list[MatchHistory], int]:
-        items = await self.invoices.list_all(
+        # One statement. The total also now honours `uploaded_by`, which the
+        # separate count did not — filtering the queue by uploader used to
+        # paginate against everybody's total.
+        return await self.invoices.list_all(
             tenant_id=tenant_id,
             limit=page_size,
             offset=(page - 1) * page_size,
@@ -271,10 +273,6 @@ class InvoiceService:
             open_only=open_only,
             uploaded_by=uploaded_by,
         )
-        total = await self.invoices.count(
-            tenant_id=tenant_id, status=status, open_only=open_only
-        )
-        return items, total
 
     async def get_for_user(
         self,

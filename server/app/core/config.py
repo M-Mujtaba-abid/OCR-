@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     # leak the database password.
     DATABASE_URL: SecretStr
 
+    # Whether to test a pooled connection before handing it out.
+    #
+    # Off, because the test is not free: measured against this deployment's
+    # Neon instance it added ~1.9 seconds to a three-query request, since a
+    # ping that fails rebuilds the connection — TLS handshake included — on
+    # requests that had nothing wrong with them. `pool_recycle` discards old
+    # connections by age instead, which costs no network at all.
+    #
+    # Turn it back on if connections start failing rather than being slow: a
+    # database on the same continent makes the ping cheap again.
+    DB_POOL_PRE_PING: bool = False
+
     # NoDecode stops pydantic-settings from json.loads()-ing the raw env string
     # before the validator runs, which is what lets `A,B` work as well as JSON.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
