@@ -1,6 +1,12 @@
 "use client";
 
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
 
 import { queryKeys } from "@/lib/query-keys";
@@ -32,6 +38,24 @@ function pollWhileWorking(data: Paginated<Invoice> | undefined): number | false 
   return data.items.some((invoice) => TRANSIENT_STATUSES.has(invoice.status))
     ? POLL_MS
     : false;
+}
+
+/**
+ * The tables and the counters above them.
+ *
+ * Deliberately narrower than the whole `invoices` prefix: that also matches the
+ * detail query — which the mutations below write directly, from the response
+ * the server already gave them — and the purchase-order preview, which costs a
+ * partner search plus one product search per line and has no business being
+ * discarded because an unrelated invoice was rejected.
+ *
+ * Both stat queries go, not one: which is mounted depends on the caller's role,
+ * and a count that disagrees with the table under it is the bug this prevents.
+ */
+function invalidateInvoiceLists(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.lists });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.myStats });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.adminStats });
 }
 
 /**
@@ -89,7 +113,14 @@ export function useInvoice(invoiceId: string | null) {
       query.state.data && TRANSIENT_STATUSES.has(query.state.data.status)
         ? POLL_MS
         : false,
-    staleTime: 0,
+    // Fresh only for as long as it can still change. A confirmed, rejected or
+    // po_created invoice is finished — refetching it on every navigation back
+    // is a request that cannot return anything new. While OCR or matching runs
+    // the opposite holds, and zero is what makes the polling above meaningful.
+    staleTime: (query) =>
+      query.state.data && TRANSIENT_STATUSES.has(query.state.data.status)
+        ? 0
+        : 5 * 60_000,
   });
 }
 
@@ -108,7 +139,9 @@ export function useRunOcr() {
     mutationFn: (invoiceId: string) => invoiceService.runOcr(invoiceId),
     onSuccess: (_data, invoiceId) => {
       toast.success("Reading the document…");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      // 202: the work has not happened yet, so there is nothing to write into
+      // the cache. Invalidate and let the polling queries report the outcome.
+      invalidateInvoiceLists(queryClient);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.invoices.detail(invoiceId),
       });
@@ -126,7 +159,7 @@ export function useRunMatching() {
     mutationFn: (invoiceId: string) => invoiceService.runMatching(invoiceId),
     onSuccess: (_data, invoiceId) => {
       toast.success("Matching against Odoo purchase orders…");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      invalidateInvoiceLists(queryClient);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.invoices.detail(invoiceId),
       });
@@ -151,7 +184,10 @@ export function useConfirmMatch() {
           ? `Overridden to ${invoice.matched_po_name}`
           : `Confirmed against ${invoice.matched_po_name}`,
       );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      // The response IS the new detail. Invalidating instead would refetch —
+      // over the network, with a flicker — data that arrived a millisecond ago.
+      queryClient.setQueryData(queryKeys.invoices.detail(invoice.id), invoice);
+      invalidateInvoiceLists(queryClient);
     },
     onError: (error: ApiError) => {
       toast.error(error.message || "Could not confirm that match");
@@ -173,7 +209,12 @@ export function usePoPreview(invoiceId: string, enabled: boolean) {
     enabled: enabled && Boolean(invoiceId),
     // The catalogue does not change mid-review, and re-resolving would move
     // the dropdown under the reviewer's cursor.
-    staleTime: 5 * 60 * 1000,
+    staleTime: 5 * 60_000,
+    // Kept far longer than the default five minutes. This is the most
+    // expensive query in the app — a partner search plus one product search
+    // per line — and a reviewer who closes the panel, deals with something
+    // else and comes back should not pay for it twice.
+    gcTime: 30 * 60_000,
   });
 }
 
@@ -190,7 +231,8 @@ export function useCreatePo() {
     }) => invoiceService.createPo(invoiceId, input),
     onSuccess: (invoice) => {
       toast.success(`Created ${invoice.matched_po_name} in Odoo as a draft`);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      queryClient.setQueryData(queryKeys.invoices.detail(invoice.id), invoice);
+      invalidateInvoiceLists(queryClient);
     },
     onError: (error: ApiError) => {
       // 409 carries the readable reason — an unchosen line, a product archived
@@ -206,9 +248,10 @@ export function useRejectInvoice() {
   return useMutation({
     mutationFn: ({ invoiceId, reason }: { invoiceId: string; reason: string }) =>
       invoiceService.reject(invoiceId, reason),
-    onSuccess: () => {
+    onSuccess: (invoice) => {
       toast.success("Invoice rejected");
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      queryClient.setQueryData(queryKeys.invoices.detail(invoice.id), invoice);
+      invalidateInvoiceLists(queryClient);
     },
     onError: (error: ApiError) => {
       toast.error(error.message || "Could not reject that invoice");
@@ -292,7 +335,12 @@ export function useDeleteInvoice() {
     mutationFn: (invoice: Invoice) => invoiceService.remove(invoice.id),
     onSuccess: (_data, invoice) => {
       toast.success(`${invoice.file_name} deleted`);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+      // Dropped, not invalidated: invalidating would refetch a row that no
+      // longer exists, and a cached detail is how the back button shows a
+      // deleted invoice as though it were still there.
+      queryClient.removeQueries({ queryKey: queryKeys.invoices.detail(invoice.id) });
+      queryClient.removeQueries({ queryKey: queryKeys.invoices.poPreview(invoice.id) });
+      invalidateInvoiceLists(queryClient);
     },
     onError: (error: ApiError) => {
       toast.error(error.message || "Could not delete that invoice");

@@ -5,6 +5,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
 } from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
 
@@ -14,7 +15,30 @@ import {
   userService,
   type ListUsersParams,
 } from "@/service/userService/user.service";
+import type { Paginated } from "@/types/api.type";
 import type { User, UserRole } from "@/types/user.type";
+
+/**
+ * Put an updated user back into every cached page that holds them.
+ *
+ * Both mutations below are given the complete updated `User` and used to throw
+ * it away, refetching whole pages of the table to reflect one changed field.
+ * Patching in place updates the row as the click lands, with no request — and
+ * without the page jumping if a sort or filter would have moved it, which a
+ * refetch does mid-interaction.
+ */
+function patchCachedUser(queryClient: QueryClient, updated: User): void {
+  queryClient.setQueriesData<Paginated<User>>(
+    { queryKey: queryKeys.users.all },
+    (page) =>
+      page && {
+        ...page,
+        items: page.items.map((user) =>
+          user.id === updated.id ? updated : user,
+        ),
+      },
+  );
+}
 
 export function useUsers(params: ListUsersParams = {}) {
   return useQuery({
@@ -49,7 +73,9 @@ export function useChangeUserRole(currentUserId?: string) {
 
     onSuccess: (updated: User) => {
       toast.success(`${updated.full_name?.trim() || updated.email} is now ${updated.role}`);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all });
+      patchCachedUser(queryClient, updated);
+      // Roles change how many of each there are.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.stats });
       if (updated.id === currentUserId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.session });
       }
@@ -72,7 +98,8 @@ export function useSetUserActive(currentUserId?: string) {
       toast.success(
         `${updated.full_name?.trim() || updated.email} ${updated.is_active ? "enabled" : "disabled"}`,
       );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all });
+      patchCachedUser(queryClient, updated);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.stats });
       if (updated.id === currentUserId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.session });
       }

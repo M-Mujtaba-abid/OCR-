@@ -18,11 +18,21 @@ export const queryKeys = {
   session: ["session"] as const,
 
   invoices: {
+    /** Everything invoice-shaped. Reach for it only when everything changed. */
     all: ["invoices"] as const,
+    /**
+     * Just the tables.
+     *
+     * Separate from `all` because `all` also matches `detail` and `poPreview`,
+     * and a mutation that changes one invoice's status has no business
+     * discarding a purchase-order preview that cost a dozen Odoo searches to
+     * build. Invalidating this prefix updates every list and page at once.
+     */
+    lists: ["invoices", "list"] as const,
     mine: (params: InvoiceListParams = {}) =>
-      [...queryKeys.invoices.all, "mine", params] as const,
+      [...queryKeys.invoices.lists, "mine", params] as const,
     queue: (params: InvoiceListParams = {}) =>
-      [...queryKeys.invoices.all, "queue", params] as const,
+      [...queryKeys.invoices.lists, "queue", params] as const,
     detail: (id: string) => [...queryKeys.invoices.all, "detail", id] as const,
     /** The Odoo resolution for a would-be purchase order. */
     poPreview: (id: string) =>
