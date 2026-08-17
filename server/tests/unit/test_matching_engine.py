@@ -15,7 +15,11 @@ import datetime as dt
 import pytest
 
 from app.schemas.extraction import InvoiceExtraction
-from app.schemas.odoo import OdooPurchaseOrder, OdooPurchaseOrderLine
+from app.schemas.odoo import (
+    LINE_PROJECTION_CAP,
+    OdooPurchaseOrder,
+    OdooPurchaseOrderLine,
+)
 from app.services.matching_engine import (
     normalise_reference,
     normalise_vendor,
@@ -320,3 +324,70 @@ class TestRanking:
             "vendor", "amount", "reference", "date", "lines"
         }
         assert payload["notes"]
+
+
+# --------------------------------------------------------------- the audit blob
+class TestCandidateLineItems:
+    """The lines carried into `candidates` and shown on the review screen.
+
+    Exact values, not bands: these are pass-through projections of Odoo data,
+    not tuned heuristics, and a reviewer comparing them against a bill needs
+    them to be the numbers Odoo holds.
+    """
+
+    def test_items_carry_the_order_lines(self) -> None:
+        order = make_order(lines=[
+            OdooPurchaseOrderLine(id=1, order_id=42, name="Apple Red",
+                                  product_name="Apple Red", product_qty=2,
+                                  price_unit=9.0, price_subtotal=18.0,
+                                  price_tax=2.0, price_total=20.0),
+        ])
+        items = score_candidate(make_invoice(), order).to_json()["items"]
+
+        assert items == [{
+            "name": "Apple Red",
+            "quantity": 2.0,
+            "unit_price": 9.0,
+            "subtotal": 18.0,
+            "price_tax": 2.0,
+            "price_total": 20.0,
+        }]
+
+    def test_total_falls_back_to_subtotal_without_tax_fields(self) -> None:
+        """Records predating `price_tax` must not display as free lines."""
+        order = make_order(lines=[
+            OdooPurchaseOrderLine(id=1, order_id=42, name="Eggplant",
+                                  product_qty=1, price_unit=5.0,
+                                  price_subtotal=5.0),
+        ])
+        [item] = score_candidate(make_invoice(), order).to_json()["items"]
+
+        assert item["price_tax"] == 0.0
+        assert item["price_total"] == 5.0
+
+    def test_line_count_is_the_true_total_when_items_are_capped(self) -> None:
+        """A truncated list must not read as the whole order."""
+        order = make_order(lines=[
+            OdooPurchaseOrderLine(id=i, order_id=42, name=f"Product {i}",
+                                  product_qty=1, price_unit=1.0,
+                                  price_subtotal=1.0)
+            for i in range(1, 41)
+        ])
+        payload = score_candidate(make_invoice(), order).to_json()
+
+        assert len(payload["items"]) == LINE_PROJECTION_CAP
+        assert payload["line_count"] == 40
+
+    def test_an_order_without_lines_serialises_empty(self) -> None:
+        payload = score_candidate(make_invoice(), make_order(lines=[])).to_json()
+
+        assert payload["items"] == []
+        assert payload["line_count"] == 0
+
+    def test_currency_and_vendor_ref_reach_the_screen(self) -> None:
+        """Both are shown beside the candidate's totals."""
+        order = make_order(currency="AED", partner_ref="INV-77")
+        payload = score_candidate(make_invoice(), order).to_json()
+
+        assert payload["currency"] == "AED"
+        assert payload["vendor_ref"] == "INV-77"

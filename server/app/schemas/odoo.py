@@ -11,7 +11,12 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+#: How many order lines are carried into a projection — the LLM prompt and the
+#: audit blob alike. Capped because a 200-line order would otherwise dominate
+#: the prompt and crowd out the other candidates entirely.
+LINE_PROJECTION_CAP = 25
 
 
 def _odoo_value(value: Any) -> Any:
@@ -47,7 +52,26 @@ class OdooPurchaseOrderLine(BaseModel):
     qty_invoiced: float = 0.0
     price_unit: float = 0.0
     price_subtotal: float = 0.0
+    #: Tax charged on this line, and the line total including it. Odoo computes
+    #: both, so they are read rather than derived — a line can carry several
+    #: taxes, and re-deriving them from a rate here would eventually disagree
+    #: with the bill Odoo itself produces.
+    price_tax: float = 0.0
+    price_total: float = 0.0
     uom: str | None = None
+
+    @model_validator(mode="after")
+    def _backfill_total(self) -> "OdooPurchaseOrderLine":
+        """Fall back to subtotal + tax when the total is absent.
+
+        Records that predate these fields — the JSON fixture, anything already
+        serialised — validate straight into this model without going through
+        `from_odoo`. Without this they would display a line total of 0.00,
+        which reads as "this line is free" rather than "this is old data".
+        """
+        if not self.price_total:
+            self.price_total = self.price_subtotal + self.price_tax
+        return self
 
     @classmethod
     def from_odoo(cls, row: dict[str, Any]) -> "OdooPurchaseOrderLine":
@@ -61,6 +85,8 @@ class OdooPurchaseOrderLine(BaseModel):
             qty_invoiced=float(_odoo_value(row.get("qty_invoiced")) or 0.0),
             price_unit=float(_odoo_value(row.get("price_unit")) or 0.0),
             price_subtotal=float(_odoo_value(row.get("price_subtotal")) or 0.0),
+            price_tax=float(_odoo_value(row.get("price_tax")) or 0.0),
+            price_total=float(_odoo_value(row.get("price_total")) or 0.0),
             uom=_relation_name(row.get("product_uom")),
         )
 
@@ -121,6 +147,27 @@ class OdooPurchaseOrder(BaseModel):
             invoice_status=_odoo_value(row.get("invoice_status")) or None,
         )
 
+    def line_items(self, limit: int = LINE_PROJECTION_CAP) -> list[dict[str, Any]]:
+        """The order's lines, as shown to a reviewer.
+
+        Persisted into the candidate audit blob so the review screen can say
+        what an order actually contains. A line-items score of 0 is only
+        actionable if the reviewer can see that this order is for mangoes and
+        the invoice is for apples — otherwise the only way to find out is to
+        open Odoo, which is the thing this product exists to avoid.
+        """
+        return [
+            {
+                "name": line.product_name or line.name,
+                "quantity": round(line.product_qty, 3),
+                "unit_price": round(line.price_unit, 2),
+                "subtotal": round(line.price_subtotal, 2),
+                "price_tax": round(line.price_tax, 2),
+                "price_total": round(line.price_total, 2),
+            }
+            for line in self.lines[:limit]
+        ]
+
     def for_prompt(self) -> dict[str, Any]:
         """A compact projection for the LLM.
 
@@ -144,8 +191,9 @@ class OdooPurchaseOrder(BaseModel):
                     "unit_price": round(line.price_unit, 2),
                     "subtotal": round(line.price_subtotal, 2),
                 }
-                # Capped: a 200-line order would otherwise dominate the prompt
-                # and crowd out the other candidates entirely.
-                for line in self.lines[:25]
+                # Deliberately leaner than `line_items` — the model does not
+                # need per-line tax to pick an order, and every field here is
+                # billed once per candidate.
+                for line in self.lines[:LINE_PROJECTION_CAP]
             ],
         }

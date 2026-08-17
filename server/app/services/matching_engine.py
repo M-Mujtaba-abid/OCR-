@@ -111,14 +111,21 @@ class ScoredCandidate:
             "po_id": self.order.id,
             "po_number": self.order.name,
             "vendor": self.order.partner_name,
+            "vendor_ref": self.order.partner_ref,
             "amount_untaxed": round(self.order.amount_untaxed, 2),
             "amount_total": round(self.order.amount_total, 2),
+            "currency": self.order.currency,
             "order_date": (
                 self.order.date_order.isoformat() if self.order.date_order else None
             ),
             "score": round(self.score, 1),
             "breakdown": {k: round(v, 1) for k, v in self.breakdown.items()},
             "notes": self.notes,
+            # What the order actually contains. `line_count` is the true total
+            # even when `items` is capped, so a truncated list never reads as
+            # the whole order.
+            "line_count": len(self.order.lines),
+            "items": self.order.line_items(),
         }
 
 

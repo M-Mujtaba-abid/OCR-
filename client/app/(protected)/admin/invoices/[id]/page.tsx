@@ -17,15 +17,8 @@ import {
   useRunMatching,
   useRunOcr,
 } from "@/hooks/invoice/useInvoices.hooks";
+import { money } from "@/lib/format";
 import { TRANSIENT_STATUSES } from "@/types/invoice.type";
-
-function money(value: number | null | undefined, currency?: string | null): string {
-  if (value == null) return "—";
-  return `${value.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}${currency ? ` ${currency}` : ""}`;
-}
 
 export default function InvoiceReviewPage() {
   const { id } = useParams<{ id: string }>();

@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { money } from "@/lib/format";
 import type { InvoiceDetail, MatchCandidate } from "@/types/invoice.type";
 
 /** Human labels for the score components. */
@@ -119,6 +120,10 @@ function CandidateRow({
   confirming: boolean;
   disabled: boolean;
 }) {
+  // Candidates matched before line details were stored carry no items at all,
+  // so this is a missing-data case rather than an empty order.
+  const items = candidate.items ?? [];
+
   return (
     <li
       className={[
@@ -140,15 +145,13 @@ function CandidateRow({
           <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-400">
             {candidate.vendor ?? "—"}
             {candidate.order_date ? ` · ${candidate.order_date}` : ""}
+            {candidate.vendor_ref ? ` · ref ${candidate.vendor_ref}` : ""}
           </p>
         </div>
 
         <div className="text-right">
           <p className="tabular-nums text-slate-900 dark:text-slate-100">
-            {candidate.amount_untaxed.toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
+            {money(candidate.amount_untaxed, candidate.currency)}
           </p>
           <p className="text-xs text-slate-500 dark:text-slate-400">untaxed</p>
         </div>
@@ -177,6 +180,58 @@ function CandidateRow({
           </span>
         ))}
       </div>
+
+      {/* What this order actually contains, under the score that judged it.
+          A line-items score of 0 is only actionable if the reviewer can see
+          why — "the invoice says Apple, this order says Eggplant" is the whole
+          decision, and without these rows making it means opening Odoo. */}
+      {items.length > 0 && (
+        <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+          <table className="w-full min-w-[520px] text-left text-sm">
+            <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">Reference id</th>
+                <th className="px-3 py-2 font-medium">Product name</th>
+                <th className="px-3 py-2 text-right font-medium">Item</th>
+                <th className="px-3 py-2 text-right font-medium">Price tax</th>
+                <th className="px-3 py-2 text-right font-medium">Total price</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {items.map((item, index) => (
+                <tr key={index}>
+                  {/* The order's own Odoo reference, repeated per line the way
+                      a printed document carries it — so a row stays traceable
+                      once it is copied, quoted, or read on its own. */}
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+                    {candidate.po_number}
+                  </td>
+                  <td className="px-3 py-2 text-slate-900 dark:text-slate-100">
+                    {item.name}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {item.quantity}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {money(item.price_tax)}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {money(item.price_total, candidate.currency)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* A capped list must say so, or a 40-line order reads as a 25-line
+              one and the reviewer compares against the wrong order. */}
+          {candidate.line_count != null && candidate.line_count > items.length && (
+            <p className="border-t border-slate-200 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              showing {items.length} of {candidate.line_count} lines
+            </p>
+          )}
+        </div>
+      )}
 
       {candidate.rejected_because && (
         <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">

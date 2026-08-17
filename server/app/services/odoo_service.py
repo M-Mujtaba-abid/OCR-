@@ -54,6 +54,8 @@ PO_LINE_FIELDS = [
     "qty_invoiced",
     "price_unit",
     "price_subtotal",
+    "price_tax",
+    "price_total",
     "product_uom",
 ]
 

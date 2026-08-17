@@ -79,6 +79,17 @@ export interface InvoiceLine {
   status: string;
 }
 
+/** One purchase-order line, as carried in the candidate audit blob. */
+export interface MatchCandidateLine {
+  name: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+  /** Tax charged on the line, and the line total including it. */
+  price_tax: number;
+  price_total: number;
+}
+
 /** One scored purchase order from the pre-filter, as stored in `candidates`. */
 export interface MatchCandidate {
   po_id: number;
@@ -92,6 +103,15 @@ export interface MatchCandidate {
   notes: string[];
   /** The model's reason for passing this one over. Null for the winner. */
   rejected_because?: string | null;
+
+  /* The fields below are optional because a candidate blob is written once, at
+     match time, and every match run before line details were stored has none
+     of them. Re-running the match on such an invoice fills them in. */
+  vendor_ref?: string | null;
+  currency?: string | null;
+  /** The order's true line count — `items` may be capped below it. */
+  line_count?: number;
+  items?: MatchCandidateLine[];
 }
 
 /** The audit blob: every candidate considered, with the decision. */
