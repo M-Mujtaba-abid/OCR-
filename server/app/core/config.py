@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     # waits for it. Short enough that an order created moments ago is not one
     # anybody is billing yet; 0 disables the cache.
     ODOO_FETCH_CACHE_SECONDS: int = Field(default=60, ge=0, le=3600)
+    # How far back to look for an identical draft order before creating one.
+    #
+    # Learned the hard way: a create that succeeded in Odoo but failed on the
+    # way back left this side knowing nothing, and each retry made another
+    # order. Three identical drafts for 30,000 AED existed before anybody could
+    # see why. The reviewer's second click must not become a second order.
+    # 0 disables the check.
+    ODOO_PO_DUPLICATE_WINDOW_MINUTES: int = Field(default=10, ge=0, le=1440)
 
     # A JSON file of purchase orders to use INSTEAD of a live Odoo.
     #

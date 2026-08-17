@@ -177,3 +177,67 @@ class ConfirmMatchRequest(BaseModel):
 
 class RejectInvoiceRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
+
+
+# ---------------------------------------------------------------------------
+# Creating a purchase order from an invoice
+# ---------------------------------------------------------------------------
+class OdooMatchRead(BaseModel):
+    """One Odoo record a piece of extracted text might refer to."""
+
+    id: int
+    name: str
+    #: 0-100. Shown to the reviewer, because "Lemon 77 / Sanitized lemon 77" is
+    #: the reason they are being asked rather than told.
+    score: float
+
+
+class PoPreviewLine(BaseModel):
+    """One invoice line and the Odoo products it might mean."""
+
+    line_no: int
+    description: str
+    quantity: float
+    unit_price: float
+    subtotal: float
+    candidates: list[OdooMatchRead]
+    #: Filled only where the answer is not really a choice. Null means the
+    #: reviewer must pick — including where a wrong candidate scored well.
+    preselected_product_id: int | None = None
+
+
+class PoPreview(BaseModel):
+    """What would be created, before anything is.
+
+    Everything here is a proposal. The vendor is resolved or it is null, and a
+    null blocks the whole thing; products are offered and never assumed.
+    """
+
+    vendor_name: str | None = None
+    vendor: OdooMatchRead | None = None
+    order_date: str | None = None
+    currency: str = "USD"
+    lines: list[PoPreviewLine] = Field(default_factory=list)
+    #: The Odoo base URL, so the client can deep-link without its own copy of
+    #: the setting.
+    odoo_url: str = ""
+
+
+class CreatePoLine(BaseModel):
+    product_id: int = Field(gt=0, description="The Odoo product the reviewer chose.")
+    description: str = Field(min_length=1, max_length=512)
+    quantity: float = Field(ge=0)
+    unit_price: float = Field(ge=0)
+
+
+class CreatePoRequest(BaseModel):
+    """The reviewer's approved mapping, not the extraction.
+
+    The ids are sent explicitly rather than re-resolved server-side: resolving
+    twice can produce two different answers, and the one that matters is the
+    one a person looked at.
+    """
+
+    partner_id: int = Field(gt=0)
+    order_date: str | None = None
+    lines: list[CreatePoLine] = Field(min_length=1)

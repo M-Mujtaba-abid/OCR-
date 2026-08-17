@@ -11,13 +11,16 @@ from app.core.exceptions import InvoiceNotReadyError
 from app.lib.responses import ApiResponse, PaginatedData, PaginationMeta
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
+from app.core.config import settings
 from app.schemas.invoice import (
     ConfirmMatchRequest,
+    CreatePoRequest,
     FileLink,
     InvoiceDetail,
     InvoiceListItem,
     InvoiceStats,
     JobAccepted,
+    PoPreview,
     RejectInvoiceRequest,
     UploadResult,
 )
@@ -28,6 +31,7 @@ from app.services.match_service import (
     run_matching_for_invoice,
 )
 from app.services.ocr_service import run_ocr_for_invoice
+from app.services.po_creator_service import build_preview, create_po_for_invoice
 
 
 def _page(items: list[InvoiceListItem], page: int, page_size: int, total: int):
@@ -236,6 +240,37 @@ class InvoiceController:
             message=(
                 "Match corrected" if updated.was_corrected else "Match confirmed"
             ),
+        )
+
+    async def po_preview(
+        self, *, invoice_id: uuid.UUID, user: User
+    ) -> ApiResponse[PoPreview]:
+        """What creating a purchase order from this invoice would produce."""
+        invoice = await self.service.get_for_user(
+            invoice_id=invoice_id, user=user, can_read_all=True
+        )
+        preview = await build_preview(invoice)
+        return ApiResponse.ok(
+            PoPreview.model_validate({**preview, "odoo_url": settings.odoo_base_url})
+        )
+
+    async def create_po(
+        self, *, invoice_id: uuid.UUID, user: User, payload: CreatePoRequest
+    ) -> ApiResponse[InvoiceDetail]:
+        invoice = await self.service.get_for_user(
+            invoice_id=invoice_id, user=user, can_read_all=True, with_lines=True
+        )
+        updated = await create_po_for_invoice(
+            self.service.db,
+            invoice=invoice,
+            partner_id=payload.partner_id,
+            order_date=payload.order_date,
+            lines=[line.model_dump() for line in payload.lines],
+            reviewer_id=user.id,
+        )
+        return ApiResponse.ok(
+            InvoiceDetail.model_validate(updated),
+            message=f"Created {updated.matched_po_name} in Odoo as a draft",
         )
 
     async def reject(

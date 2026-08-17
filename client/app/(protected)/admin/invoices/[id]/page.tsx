@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
+import { CreatePurchaseOrder } from "@/components/invoices/CreatePurchaseOrder";
 import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
 import { MatchCandidates } from "@/components/invoices/MatchCandidates";
 import { Alert } from "@/components/ui/Alert";
@@ -315,6 +316,9 @@ export default function InvoiceReviewPage() {
         confirming={confirm.isPending}
         disabled={busy}
       />
+
+      {/* ------------------------------------------------------- create a PO */}
+      <CreatePurchaseOrder invoice={invoice} />
 
       {/* -------------------------------------------------------------- reject */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">

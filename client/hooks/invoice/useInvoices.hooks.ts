@@ -9,6 +9,7 @@ import { invoiceService } from "@/service/invoiceService/invoice.service";
 import type { Paginated } from "@/types/api.type";
 import {
   TRANSIENT_STATUSES,
+  type CreatePoInput,
   type Invoice,
   type InvoiceListParams,
   type UploadInput,
@@ -154,6 +155,47 @@ export function useConfirmMatch() {
     },
     onError: (error: ApiError) => {
       toast.error(error.message || "Could not confirm that match");
+    },
+  });
+}
+
+/**
+ * The Odoo resolution for a would-be purchase order.
+ *
+ * `enabled` rather than eager: it costs several Odoo searches, one per invoice
+ * line, so it runs when the reviewer opens the panel and not on every visit to
+ * a review screen.
+ */
+export function usePoPreview(invoiceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.invoices.poPreview(invoiceId),
+    queryFn: () => invoiceService.poPreview(invoiceId),
+    enabled: enabled && Boolean(invoiceId),
+    // The catalogue does not change mid-review, and re-resolving would move
+    // the dropdown under the reviewer's cursor.
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useCreatePo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      invoiceId,
+      input,
+    }: {
+      invoiceId: string;
+      input: CreatePoInput;
+    }) => invoiceService.createPo(invoiceId, input),
+    onSuccess: (invoice) => {
+      toast.success(`Created ${invoice.matched_po_name} in Odoo as a draft`);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
+    },
+    onError: (error: ApiError) => {
+      // 409 carries the readable reason — an unchosen line, a product archived
+      // since the preview, or Odoo refusing the write.
+      toast.error(error.message || "Could not create the purchase order");
     },
   });
 }

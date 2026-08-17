@@ -59,6 +59,10 @@ class InvoiceStatus(str, enum.Enum):
     CONFIRMED = "confirmed"
     CORRECTED = "corrected"
     REJECTED = "rejected"
+    # A draft purchase order was created in Odoo from this invoice, because no
+    # existing order matched it. Terminal here, but not in Odoo: what was
+    # created is an RFQ somebody still has to confirm there.
+    PO_CREATED = "po_created"
     PUSHED = "pushed"
 
 

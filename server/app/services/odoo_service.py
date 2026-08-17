@@ -28,7 +28,11 @@ import anyio.to_thread
 from app.core.config import settings
 from app.core.exceptions import OdooAuthError, OdooError, OdooNotConfiguredError
 from app.lib.logging import get_logger
-from app.schemas.odoo import OdooPurchaseOrder, OdooPurchaseOrderLine
+from app.schemas.odoo import (
+    OdooCreatedOrder,
+    OdooPurchaseOrder,
+    OdooPurchaseOrderLine,
+)
 
 logger = get_logger(__name__)
 
@@ -234,6 +238,21 @@ def clear_fetch_cache() -> None:
     """Forget every cached fetch. For tests and for a forced refresh."""
     with _cache_lock:
         _cache.clear()
+
+
+def match_recent_draft(
+    rows: list[dict[str, Any]], expected_untaxed: float
+) -> dict[str, Any] | None:
+    """A draft order already standing for this value, if one is.
+
+    Pure, so the rule can be tested without Odoo. Compared on the untaxed
+    total because that is what the caller can predict before creating —
+    quantity times price, before Odoo applies each product's own tax.
+    """
+    for row in rows:
+        if abs(float(row.get("amount_untaxed") or 0.0) - expected_untaxed) <= 0.01:
+            return row
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +481,171 @@ class OdooService:
         order = OdooPurchaseOrder.from_odoo(rows[0])
         await self._attach_lines(client, [order], rows)
         return order
+
+    # ------------------------------------------------------------- resolution
+    async def search_by_tokens(
+        self, model: str, tokens: list[str], *, limit: int = 40
+    ) -> list[dict[str, Any]]:
+        """Records whose name contains ANY of these tokens.
+
+        Tokens rather than the whole string, because the whole string never
+        matches: Odoo holds "A J K Restaurants Management Llc" and "Eggplant
+        باذنجان" while the document says "AJK Restaurants" and "Egg Plant
+        (C. Int.)". An `ilike` on either of those returns nothing at all —
+        measured, on this data — whereas `restaurants` and `plant` find them.
+        Ranking the results is somebody else's job; this only casts the net.
+        """
+        if not tokens:
+            return []
+
+        # Odoo's domains are prefix notation: N terms need N-1 leading '|'.
+        domain: list[Any] = ["|"] * (len(tokens) - 1)
+        domain += [("name", "ilike", token) for token in tokens]
+
+        ids: list[int] = await _run(
+            _get_client().execute, model, "search", domain, limit=limit
+        )
+        if not ids:
+            return []
+        rows: list[dict[str, Any]] = await _run(
+            _get_client().execute, model, "read", ids, fields=["display_name"]
+        )
+        return rows
+
+    async def read_names(self, model: str, ids: list[int]) -> dict[int, str]:
+        """Current display names for ids, for re-checking a stale preview."""
+        if not ids:
+            return {}
+        rows: list[dict[str, Any]] = await _run(
+            _get_client().execute, model, "read", ids, fields=["display_name"]
+        )
+        return {int(r["id"]): str(r["display_name"]) for r in rows}
+
+    # -------------------------------------------------------------- creation
+    async def _recent_identical_draft(
+        self, client: _BlockingOdooClient, partner_id: int, expected_untaxed: float
+    ) -> OdooCreatedOrder | None:
+        """A draft for this vendor and this value, raised moments ago.
+
+        Deliberately narrow — same vendor, same untaxed total, inside a short
+        window — so a vendor genuinely ordered twice in a day is unaffected.
+        Two identical orders minutes apart are far more likely to be one order
+        clicked twice.
+        """
+        window = settings.ODOO_PO_DUPLICATE_WINDOW_MINUTES
+        if window <= 0:
+            return None
+
+        # Odoo stores create_date in UTC.
+        since = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=window)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        rows: list[dict[str, Any]] = await _run(
+            client.execute,
+            "purchase.order",
+            "search_read",
+            [
+                ("partner_id", "=", partner_id),
+                ("state", "=", "draft"),
+                ("create_date", ">=", since),
+            ],
+            fields=["name", "amount_untaxed"],
+            limit=20,
+            order="id desc",
+        )
+
+        match = match_recent_draft(rows, expected_untaxed)
+        if match is None:
+            return None
+        return OdooCreatedOrder(id=int(match["id"]), name=str(match["name"]))
+
+    async def create_draft_purchase_order(
+        self,
+        *,
+        partner_id: int,
+        date_order: str,
+        order_lines: list[dict[str, Any]],
+    ) -> OdooCreatedOrder:
+        """Create an RFQ and read back its number.
+
+        The only write this system makes to Odoo. Three things make that safe
+        to do from an automated pipeline:
+
+          * It is created in `draft` — an RFQ, not a confirmed order. Nothing
+            is ordered and nothing is owed until a person confirms it in Odoo.
+            `state` is deliberately not passed: draft is the default, and
+            sending it would be a claim rather than a default.
+          * `taxes_id` is not passed either. Odoo applies whatever tax is
+            configured against each product, which is where that decision
+            belongs — an OCR'd tax figure must not overwrite an ERP's tax
+            configuration.
+          * Only `partner_id`, `date_order` and the lines are sent. Odoo fills
+            the rest itself (name from its sequence, currency from the partner,
+            company and picking type from defaults), and computing them here
+            would be guessing at another system's rules.
+        """
+        if settings.uses_odoo_fixture:
+            raise OdooNotConfiguredError(
+                "Purchase orders cannot be created while running from the "
+                "fixture. Set ODOO_URL, ODOO_DB and ODOO_USERNAME."
+            )
+
+        client = _get_client()
+
+        # Before creating, check nothing identical was just created. A create
+        # that reached Odoo and then failed on the way back leaves this side
+        # knowing nothing, and the reviewer's natural response — click again —
+        # would raise a second order for the same money.
+        expected = round(
+            sum(
+                float(line.get("product_qty") or 0.0) * float(line.get("price_unit") or 0.0)
+                for line in order_lines
+            ),
+            2,
+        )
+        existing = await self._recent_identical_draft(client, partner_id, expected)
+        if existing is not None:
+            logger.warning(
+                "Not creating: %s (%s) is an identical draft for partner %s raised "
+                "in the last %d minute(s) — returning it instead",
+                existing.name,
+                existing.id,
+                partner_id,
+                settings.ODOO_PO_DUPLICATE_WINDOW_MINUTES,
+            )
+            return existing
+
+        values: dict[str, Any] = {
+            "partner_id": partner_id,
+            "date_order": date_order,
+            # (0, 0, {...}) is Odoo's "create a new child record" command.
+            "order_line": [(0, 0, line) for line in order_lines],
+        }
+
+        # `create` given a LIST of vals is a multi-create and answers with a
+        # list of ids — one entry here, but a list all the same. Odoo also
+        # accepts a bare dict and answers with a bare id, and which form comes
+        # back has varied across versions, so both are handled: getting this
+        # wrong once already left an order in Odoo that this side never saw.
+        result = await _run(client.execute, "purchase.order", "create", [values])
+        po_id = int(result[0] if isinstance(result, list) else result)
+
+        rows: list[dict[str, Any]] = await _run(
+            client.execute, "purchase.order", "read", [po_id], fields=["name"]
+        )
+        name = str(rows[0]["name"]) if rows else f"PO-{po_id}"
+
+        logger.info(
+            "Created draft purchase order %s (%s) for partner %s with %d line(s)",
+            name,
+            po_id,
+            partner_id,
+            len(order_lines),
+        )
+        # A new order changes what "open" means, and a cached fetch would keep
+        # answering with the set from before it existed.
+        clear_fetch_cache()
+        return OdooCreatedOrder(id=po_id, name=name)
 
 
 odoo_service = OdooService()

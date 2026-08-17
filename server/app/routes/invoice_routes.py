@@ -37,11 +37,13 @@ from app.models.match_history import InvoiceStatus
 from app.models.user import User
 from app.schemas.invoice import (
     ConfirmMatchRequest,
+    CreatePoRequest,
     FileLink,
     InvoiceDetail,
     InvoiceListItem,
     InvoiceStats,
     JobAccepted,
+    PoPreview,
     RejectInvoiceRequest,
     UploadResult,
 )
@@ -274,6 +276,38 @@ async def confirm_invoice_match(
     user: CanApprove,
 ) -> ApiResponse[InvoiceDetail]:
     return await controller.confirm(invoice_id=invoice_id, user=user, payload=payload)
+
+
+@router.get(
+    "/{invoice_id}/po-preview",
+    response_model=ApiResponse[PoPreview],
+    summary="What creating a purchase order from this invoice would produce",
+    responses=ERROR_RESPONSES,
+)
+async def po_preview(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    controller: Controller,
+    user: CanApprove,
+) -> ApiResponse[PoPreview]:
+    return await controller.po_preview(invoice_id=invoice_id, user=user)
+
+
+@router.post(
+    "/{invoice_id}/create-po",
+    response_model=ApiResponse[InvoiceDetail],
+    summary="Create a draft purchase order in Odoo from this invoice",
+    responses=ERROR_RESPONSES,
+)
+async def create_purchase_order(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    payload: CreatePoRequest,
+    controller: Controller,
+    user: CanApprove,
+) -> ApiResponse[InvoiceDetail]:
+    """Writes to Odoo. The order is created in draft, so it still needs
+    confirming there — and the mapping in the payload is the one a reviewer
+    approved, not one resolved on the server."""
+    return await controller.create_po(invoice_id=invoice_id, user=user, payload=payload)
 
 
 @router.post(

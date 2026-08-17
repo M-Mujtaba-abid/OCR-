@@ -38,6 +38,29 @@ def _relation_name(value: Any) -> str | None:
     return None
 
 
+class OdooEntityMatch(BaseModel):
+    """One Odoo record a piece of extracted text might refer to.
+
+    Carries the score that put it there. A reviewer choosing between "Lemon"
+    and "Sanitized lemon" is entitled to know the machine could not tell them
+    apart either — a bare list of names hides that.
+    """
+
+    id: int
+    name: str
+    #: 0-100 similarity against the extracted text.
+    score: float
+
+
+class OdooCreatedOrder(BaseModel):
+    """A purchase order this system created, read back from Odoo."""
+
+    id: int
+    #: Odoo's own sequence number — "P01690", not the integer id. This is what
+    #: a person will look for in Odoo, so it is what the screen must show.
+    name: str
+
+
 class OdooPurchaseOrderLine(BaseModel):
     """One `purchase.order.line`."""
 

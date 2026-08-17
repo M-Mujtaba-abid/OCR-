@@ -23,6 +23,7 @@ const PRESENTATION: Record<InvoiceStatus, { label: string; tone: BadgeTone }> = 
   confirmed: { label: "Confirmed", tone: "positive" },
   corrected: { label: "Corrected", tone: "accent" },
   rejected: { label: "Rejected", tone: "negative" },
+  po_created: { label: "PO created", tone: "positive" },
   pushed: { label: "Pushed to Odoo", tone: "positive" },
 };
 

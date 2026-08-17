@@ -24,6 +24,9 @@ export const queryKeys = {
     queue: (params: InvoiceListParams = {}) =>
       [...queryKeys.invoices.all, "queue", params] as const,
     detail: (id: string) => [...queryKeys.invoices.all, "detail", id] as const,
+    /** The Odoo resolution for a would-be purchase order. */
+    poPreview: (id: string) =>
+      [...queryKeys.invoices.all, "po-preview", id] as const,
     myStats: [...(["invoices"] as const), "stats", "mine"] as const,
     adminStats: [...(["invoices"] as const), "stats", "admin"] as const,
   },

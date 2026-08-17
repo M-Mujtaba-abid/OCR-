@@ -1,12 +1,14 @@
 import api, { UPLOAD_TIMEOUT } from "@/service/api";
 import type { ApiResponse, Paginated } from "@/types/api.type";
 import type {
+  CreatePoInput,
   FileLink,
   Invoice,
   InvoiceDetail,
   InvoiceListParams,
   InvoiceStats,
   JobAccepted,
+  PoPreview,
   UploadInput,
   UploadResult,
 } from "@/types/invoice.type";
@@ -160,6 +162,37 @@ export const invoiceService = {
     const response = await api.post<ApiResponse<InvoiceDetail>>(
       `/invoices/${invoiceId}/confirm`,
       { po_id: poId },
+    );
+    return response.data.data;
+  },
+
+  /**
+   * What creating a purchase order from this invoice would produce.
+   *
+   * Read-only and safe to call before the reviewer has decided anything: it
+   * resolves the vendor and offers products, but writes nothing.
+   */
+  poPreview: async (invoiceId: string): Promise<PoPreview> => {
+    const response = await api.get<ApiResponse<PoPreview>>(
+      `/invoices/${invoiceId}/po-preview`,
+    );
+    return response.data.data;
+  },
+
+  /**
+   * Create the draft purchase order in Odoo.
+   *
+   * The payload carries the mapping the reviewer approved, product ids and
+   * all — the server does not re-resolve, because resolving twice can produce
+   * two answers and only one of them was looked at by a person.
+   */
+  createPo: async (
+    invoiceId: string,
+    input: CreatePoInput,
+  ): Promise<InvoiceDetail> => {
+    const response = await api.post<ApiResponse<InvoiceDetail>>(
+      `/invoices/${invoiceId}/create-po`,
+      input,
     );
     return response.data.data;
   },

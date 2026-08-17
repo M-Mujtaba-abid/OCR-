@@ -14,6 +14,8 @@ export type InvoiceStatus =
   | "confirmed"
   | "corrected"
   | "rejected"
+  /** A draft purchase order was created in Odoo from this invoice. */
+  | "po_created"
   | "pushed";
 
 export interface InvoiceUploader {
@@ -158,6 +160,55 @@ export interface InvoiceDetail extends Invoice {
   odoo_bill_id: number | null;
   reviewed_at: string | null;
   rejection_reason: string | null;
+}
+
+/* -------------------------------------------------------------------------
+ * Creating a purchase order from an invoice
+ * ---------------------------------------------------------------------- */
+
+/** One Odoo record a piece of extracted text might refer to. */
+export interface OdooMatch {
+  id: number;
+  name: string;
+  /** 0-100. Shown, because a close second is the reason to ask a human. */
+  score: number;
+}
+
+export interface PoPreviewLine {
+  line_no: number;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+  candidates: OdooMatch[];
+  /** Null where the reviewer must choose — including where a wrong candidate
+   *  scored well, which is the case this whole flow exists for. */
+  preselected_product_id: number | null;
+}
+
+/** What would be created in Odoo, before anything is. */
+export interface PoPreview {
+  vendor_name: string | null;
+  /** Null blocks the whole thing: no vendor, no purchase order. */
+  vendor: OdooMatch | null;
+  order_date: string | null;
+  currency: string;
+  lines: PoPreviewLine[];
+  /** Odoo's base URL, so the deep link needs no client-side setting. */
+  odoo_url: string;
+}
+
+export interface CreatePoLine {
+  product_id: number;
+  description: string;
+  quantity: number;
+  unit_price: number;
+}
+
+export interface CreatePoInput {
+  partner_id: number;
+  order_date: string | null;
+  lines: CreatePoLine[];
 }
 
 /** A file the server refused. Reported per-file so a partial upload is legible. */
