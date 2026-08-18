@@ -524,40 +524,49 @@ async def inspect_uploaded_object(key: str) -> StoredObject:
     The trust boundary for direct upload. Between handing out a signed URL and
     being told "it's there", the only things known for certain are what R2 will
     tell us — so both the size and the type are re-established here rather than
-    taken from the client:
+    taken from the client.
 
-      * HeadObject for the true byte count, checked against the same limit the
-        old path enforced while reading.
-      * A ranged GET of the first bytes for the magic number, so a `.txt`
-        renamed to `.pdf` is refused exactly as it was before.
+    **One round trip, not two.** This used to be a HeadObject for the size
+    followed by a ranged GET for the magic number. A ranged GET already answers
+    both: R2 returns `Content-Range: bytes 0-7/13214`, and the figure after the
+    slash is the object's true length. Registering ten files was paying twenty
+    sequential trips to R2 for information ten could carry.
 
     Raises the same typed errors the old path raised, so callers already
     written to catch them keep working.
     """
 
-    def _head() -> int:
-        response = get_r2_client().head_object(
-            Bucket=settings.R2_BUCKET_NAME, Key=key
-        )
-        return int(response["ContentLength"])
-
-    def _head_bytes() -> bytes:
+    def _probe() -> tuple[int, bytes]:
         response = get_r2_client().get_object(
             Bucket=settings.R2_BUCKET_NAME,
             Key=key,
             Range=f"bytes=0-{_SNIFF_BYTES - 1}",
         )
-        return bytes(response["Body"].read())
+        head = bytes(response["Body"].read())
+        # ContentLength on a ranged response is the length of the RANGE, so the
+        # total has to come from Content-Range. Falling back to it anyway, for
+        # the case where a provider answers a range request with the whole
+        # object and omits the header.
+        _, _, total = str(response.get("ContentRange", "")).partition("/")
+        size = int(total) if total.isdigit() else response["ContentLength"]
+        return int(size), head
 
     try:
-        size = await anyio.to_thread.run_sync(_head)
+        size, head = await anyio.to_thread.run_sync(_probe)
     except ClientError as exc:
-        # A key that was never written, or was written to a prefix this caller
-        # does not own — either way there is nothing to register.
-        logger.info("Register refused: no object at key=%s", key)
+        http_status = int(
+            exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)
+        )
+        if http_status >= 500:
+            logger.exception("Probe failed for key=%s", key)
+            raise StorageError() from exc
+        # 404 — never written, or written under a prefix this caller does not
+        # own. 416 — the object exists but has no bytes to range over. Both mean
+        # there is nothing to register, and neither is our fault.
+        logger.info("Register refused: nothing readable at key=%s", key)
         raise EmptyFileError("That upload did not complete.") from exc
     except BotoCoreError as exc:
-        logger.exception("HeadObject failed for key=%s", key)
+        logger.exception("Probe failed for key=%s", key)
         raise StorageError() from exc
 
     if size == 0:
@@ -566,12 +575,6 @@ async def inspect_uploaded_object(key: str) -> StoredObject:
         raise FileTooLargeError(
             f"File exceeds the {settings.UPLOAD_MAX_SIZE_MB} MB limit."
         )
-
-    try:
-        head = await anyio.to_thread.run_sync(_head_bytes)
-    except (ClientError, BotoCoreError) as exc:
-        logger.exception("Range read failed for key=%s", key)
-        raise StorageError() from exc
 
     mime_type = sniff_mime_type(head)
     if mime_type is None or mime_type not in ALLOWED_MIME_TYPES:

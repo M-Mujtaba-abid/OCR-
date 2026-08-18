@@ -79,9 +79,11 @@ class InvoiceController:
             member_notes=member_notes,
         )
 
-        # Queued, not awaited. Mistral takes 5–20 seconds per document and the
-        # member has no reason to sit through it — they get a 201 immediately
-        # and the row moves to ocr_done on its own while the UI polls.
+        # A no-op unless OCR_IN_UPLOAD_REQUEST is on. By default the client
+        # starts each invoice with its own call, because a background task
+        # queued here runs inside the invocation this response is waiting on —
+        # see the setting's own note. Either way the member gets a 201 and the
+        # rows move on their own while the UI polls.
         self.service.schedule_extraction(background, created)
 
         # 201 even with rejections: at least one invoice was created, and the
@@ -210,6 +212,64 @@ class InvoiceController:
             message="Extraction queued",
         )
 
+    async def start_upload_extraction(
+        self, *, invoice_id: uuid.UUID, user: User, background: BackgroundTasks
+    ) -> ApiResponse[JobAccepted]:
+        """Start extraction for an invoice the caller has just uploaded.
+
+        The member-facing twin of `start_ocr`, and deliberately narrower on
+        every axis, because this one is reachable by anybody who can upload:
+
+          * Only the uploader. `can_read_all=False`, so somebody else's id is a
+            404 exactly as it is everywhere else.
+          * Only from `uploaded`. Anything further along is answered with the
+            status it already holds rather than an error — a double click, a
+            retry, or a second tab is then harmless, and a member cannot re-run
+            extraction on a finished invoice and spend Mistral budget doing it.
+          * Only when extraction is switched on at all, so a client call cannot
+            walk around the kill switch.
+
+        This exists because the upload response no longer queues extraction
+        itself: on a serverless platform that background task runs inside the
+        invocation the browser is waiting on. One call per invoice moves the
+        work into its own invocation, which returns the upload immediately and
+        extracts every file in parallel rather than one after another.
+        """
+        invoice = await self.service.get_for_user(
+            invoice_id=invoice_id, user=user, can_read_all=False
+        )
+
+        if (
+            invoice.status is not InvoiceStatus.UPLOADED
+            or not InvoiceService.extraction_enabled()
+        ):
+            # Not an error, and deliberately not a 409: the caller asked for
+            # this invoice to be moving, and it either is or is finished. The
+            # status it comes back with says which.
+            return ApiResponse.ok(
+                JobAccepted(
+                    id=invoice.id,
+                    status=invoice.status,
+                    message="Nothing to start.",
+                ),
+                message="Already started",
+            )
+
+        # Claimed here, in the request, for the same reason `start_ocr` does
+        # it: the 202 must not announce "queued" while the row still reads
+        # `uploaded` to a client that polls immediately.
+        await self.service.mark_status(invoice, InvoiceStatus.OCR_QUEUED)
+
+        background.add_task(run_ocr_for_invoice, invoice.id)
+        return ApiResponse.ok(
+            JobAccepted(
+                id=invoice.id,
+                status=InvoiceStatus.OCR_QUEUED,
+                message="Extraction started.",
+            ),
+            message="Extraction queued",
+        )
+
     async def start_matching(
         self, *, invoice_id: uuid.UUID, user: User, background: BackgroundTasks
     ) -> ApiResponse[JobAccepted]:
@@ -276,8 +336,8 @@ class InvoiceController:
             member_ref_no=payload.member_ref_no,
             member_notes=payload.member_notes,
         )
-        # Queued after the response body is built, exactly as the old upload
-        # path did — the member must not wait for Mistral.
+        # As in `upload`: a no-op unless OCR_IN_UPLOAD_REQUEST is on, because
+        # the member must not wait for Mistral.
         self.service.schedule_extraction(background, created)
         return ApiResponse.ok(
             UploadResult(

@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useBillPreview, useCreateBill } from "@/hooks/invoice/useInvoices.hooks";
-import { money } from "@/lib/format";
+import { money, percent } from "@/lib/format";
 import type {
   BillPreview,
   BillPreviewLine,
@@ -242,10 +242,26 @@ function PreviewBody({
   );
 
   const chosen = preview.lines.filter((line) => quantityOf(line) > EPSILON);
-  const total = chosen.reduce(
+
+  /**
+   * What the bill will say, at the quantities currently on screen.
+   *
+   * Recomputed here rather than taken from the preview because the reviewer
+   * edits "Bill now", and the server's figures are for the quantities it
+   * proposed. Tax comes from each line's Odoo rate — never from the invoice.
+   * Odoo owns the rate; this only reports what it will charge, which is the
+   * whole point: an order line with no tax against an invoice charging 5% is
+   * something to see here, not after the payable is posted.
+   */
+  const untaxed = chosen.reduce(
     (sum, line) => sum + quantityOf(line) * line.unit_price,
     0,
   );
+  const tax = chosen.reduce(
+    (sum, line) => sum + quantityOf(line) * line.unit_price * line.tax_rate,
+    0,
+  );
+  const total = untaxed + tax;
 
   // A duplicate that came back from the create call outranks the one the
   // preview found: it is the newer answer, and it is the one the reviewer just
@@ -478,20 +494,36 @@ function PreviewBody({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-600 dark:text-slate-400">
-          Billing {chosen.length} line{chosen.length === 1 ? "" : "s"} ·{" "}
-          <span className="font-medium text-slate-900 dark:text-white">
-            {money(total, preview.currency)}
-          </span>
-          {preview.invoice_untaxed != null &&
-            Math.abs(preview.invoice_untaxed - total) > 0.01 && (
-              // The two routinely differ, and a reviewer should see the gap
-              // before posting rather than when somebody reconciles it.
-              <span className="ml-2 text-amber-700 dark:text-amber-400">
-                the invoice says {money(preview.invoice_untaxed, preview.currency)}
-              </span>
+        <div className="text-sm text-slate-600 dark:text-slate-400">
+          <p>
+            Billing {chosen.length} line{chosen.length === 1 ? "" : "s"} ·
+            untaxed {money(untaxed, preview.currency)} · tax{" "}
+            {money(tax, preview.currency)} ·{" "}
+            <span className="font-medium text-slate-900 dark:text-white">
+              {money(total, preview.currency)}
+            </span>
+          </p>
+          {/* Compared against the invoice's TOTAL, not its untaxed amount. The
+              paper's headline figure is what a reviewer checks the screen
+              against, and comparing untaxed-to-total is what made a correctly
+              taxed bill look like it had dropped the tax. */}
+          {preview.invoice_total != null &&
+            Math.abs(preview.invoice_total - total) > 0.01 && (
+              <p className="mt-1 text-amber-700 dark:text-amber-400">
+                The invoice says {money(preview.invoice_total, preview.currency)}
+                {preview.invoice_tax != null &&
+                  Math.abs(preview.invoice_tax - tax) > 0.01 && (
+                    <>
+                      {" "}
+                      — its tax is {money(preview.invoice_tax, preview.currency)}
+                      {tax < EPSILON
+                        ? ", and this order carries none. Set the tax on the order in Odoo before billing."
+                        : ` against Odoo's ${money(tax, preview.currency)}.`}
+                    </>
+                  )}
+              </p>
             )}
-        </p>
+        </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={onCancel} disabled={creating}>
             Cancel
@@ -592,6 +624,15 @@ function LineRow({
       </td>
       <td className="px-3 py-2 text-right tabular-nums text-slate-900 dark:text-white">
         {money(quantity * line.unit_price, currency)}
+        {/* The rate Odoo holds for this line, per line rather than only in the
+            footer: a single untaxed line among taxed ones is what makes a
+            whole bill disagree with the paper, and the total alone does not
+            say which one it was. */}
+        <div className="text-xs font-normal text-slate-500 dark:text-slate-400">
+          {line.tax_rate > 0
+            ? `+ ${money(quantity * line.unit_price * line.tax_rate, currency)} tax (${percent(line.tax_rate)})`
+            : "no tax"}
+        </div>
       </td>
     </tr>
   );

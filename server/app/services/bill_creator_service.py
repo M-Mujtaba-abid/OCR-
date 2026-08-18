@@ -41,7 +41,6 @@ from typing import Any
 from rapidfuzz import fuzz
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core import storage
 from app.core.config import settings
 from app.core.exceptions import InvoiceNotReadyError, OverBilledError
 from app.lib.logging import get_logger
@@ -52,13 +51,14 @@ from app.schemas.extraction import ExtractedLineItem, InvoiceExtraction
 from app.schemas.invoice import AttachmentStatus, BillOutcome
 from app.schemas.odoo import (
     PAID_PAYMENT_STATES,
-    BillAttachment,
+    OdooAttachment,
     OdooExistingBill,
     OdooPurchaseOrderLine,
 )
 from app.services.matching_engine import normalise_vendor
 from app.services.notification_service import NotificationService
 from app.services.odoo_service import BILLABLE_PO_STATES, odoo_service
+from app.services.source_document import read_source_document
 
 logger = get_logger(__name__)
 
@@ -106,6 +106,33 @@ def remaining_to_bill(line: OdooPurchaseOrderLine) -> float:
     if line.display_type:
         return 0.0
     return max(0.0, line.product_qty - line.qty_invoiced)
+
+
+def tax_rate_of(line: OdooPurchaseOrderLine) -> float:
+    """The effective tax rate Odoo applies to this order line, as a fraction.
+
+    Read off the ORDER's own figures — `price_tax` over `price_subtotal` — and
+    never off the invoice. Odoo owns tax: the rate lives on the product and the
+    fiscal position, an OCR'd figure must not overwrite it, and a reviewer who
+    disagrees fixes it in Odoo rather than here. This only reports what the
+    bill is going to say.
+
+    A ratio rather than the tax ids, because a line can carry several taxes at
+    once and reimplementing Odoo's compounding rules to add them up is the
+    wrong thing to own. Scaling Odoo's own answer is exact for percentage
+    taxes, which is what these lines carry, and proportionate for the rest.
+
+    A rate rather than an amount because the reviewer edits the quantity on
+    screen, and a figure computed for the proposed quantity would be wrong the
+    moment they do.
+
+    Zero when the line carries no tax. That is a real answer, not a missing
+    one: it is exactly how a bill comes out short against an invoice charging
+    5% VAT, and the screen now shows both figures so it is seen beforehand.
+    """
+    if not line.price_subtotal or not line.price_tax:
+        return 0.0
+    return line.price_tax / line.price_subtotal
 
 
 def propose_mapping(
@@ -271,6 +298,7 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
 
     lines: list[dict[str, Any]] = []
     proposed_untaxed = 0.0
+    proposed_tax = 0.0
     for po_line in order.lines:
         if po_line.display_type:
             continue
@@ -281,7 +309,10 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
         # the order in Odoo; proposing an impossible number would only be
         # refused by the create endpoint a moment later.
         proposed = min(pair.item.quantity, remaining) if pair else 0.0
-        proposed_untaxed += proposed * po_line.price_unit
+        rate = tax_rate_of(po_line)
+        line_untaxed = proposed * po_line.price_unit
+        proposed_untaxed += line_untaxed
+        proposed_tax += line_untaxed * rate
 
         lines.append(
             {
@@ -296,6 +327,7 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
                 "remaining_qty": remaining,
                 "proposed_qty": proposed,
                 "unit_price": po_line.price_unit,
+                "tax_rate": round(rate, 6),
                 "invoice_line_no": pair.invoice_line_no if pair else None,
                 "invoice_description": pair.item.name if pair else None,
                 "invoice_quantity": pair.item.quantity if pair else None,
@@ -328,7 +360,11 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
             for no in unmatched_nos
         ],
         "proposed_untaxed": round(proposed_untaxed, 2),
+        "proposed_tax": round(proposed_tax, 2),
+        "proposed_total": round(proposed_untaxed + proposed_tax, 2),
         "invoice_untaxed": extraction.untaxed_amount or None,
+        "invoice_tax": extraction.tax_amount or None,
+        "invoice_total": extraction.total_amount or None,
         "odoo_url": settings.odoo_base_url,
     }
 
@@ -458,11 +494,34 @@ async def create_bill_for_invoice(
                 bill_ref,
                 outcome.value,
             )
+
+            # The bill is not created again, but the document is still put on
+            # it. This branch is reached by the reviewer who clicked twice, or
+            # whose first attempt created the bill and then failed — exactly the
+            # cases where the scan never made it, and where returning "already
+            # exists" and nothing else leaves them uploading it by hand. The
+            # attach is idempotent by file name, so a bill that already has it
+            # is left alone.
+            attached = AttachmentStatus.SKIPPED
+            if attach_document:
+                document = await read_source_document(invoice)
+                if document is not None:
+                    status, _ = await odoo_service.attach_document(
+                        res_model="account.move",
+                        res_id=existing.id,
+                        attachment=document,
+                    )
+                    attached = (
+                        AttachmentStatus(status)
+                        if status in {s.value for s in AttachmentStatus}
+                        else AttachmentStatus.SKIPPED
+                    )
+
             return invoice, {
                 "status": outcome,
                 "bill_id": existing.id,
                 "bill_ref": existing.ref or existing.name,
-                "attachment_status": AttachmentStatus.SKIPPED,
+                "attachment_status": attached,
                 "invoice_date": bill_date,
             }
 
@@ -474,9 +533,9 @@ async def create_bill_for_invoice(
     # it can be slow — a 10 MB scan off object storage — and anything slow
     # sitting between the irreversible receipt and the bill widens the one
     # window a retry cannot heal: goods marked received with nothing billed.
-    attachment: BillAttachment | None = None
+    attachment: OdooAttachment | None = None
     if attach_document:
-        attachment = await _read_source_document(invoice)
+        attachment = await read_source_document(invoice)
 
     # ------------------------------------------------- the irreversible write
     receipt = None
@@ -579,27 +638,3 @@ async def create_bill_for_invoice(
         "receipt_name": receipt.picking_name if receipt else None,
         "backorder_names": list(receipt.backorder_names) if receipt else [],
     }
-
-
-async def _read_source_document(invoice: MatchHistory) -> BillAttachment | None:
-    """Fetch the scanned invoice out of storage. Never fails the request.
-
-    A storage failure must not stop a bill being created: the document is
-    evidence attached to the record, and a reviewer can drag it onto the bill in
-    Odoo in ten seconds. Refusing to bill because the PDF could not be read
-    would hold up the payable for the least important part of it.
-    """
-    try:
-        content = await storage.download_file(invoice.file_key)
-    except Exception:
-        logger.exception(
-            "Invoice %s: source document could not be read from storage; "
-            "billing without it",
-            invoice.id,
-        )
-        return None
-    return BillAttachment(
-        file_name=invoice.file_name,
-        mime_type=invoice.mime_type or "application/pdf",
-        content=content,
-    )

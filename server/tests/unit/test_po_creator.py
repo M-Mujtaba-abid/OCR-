@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from app.core.exceptions import InvoiceNotReadyError
+from app.schemas.odoo import OdooAttachment
 from app.services import po_creator_service as poc
 from app.services.odoo_service import match_recent_draft
 
@@ -70,11 +71,27 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
         created.update(kwargs)
         from app.schemas.odoo import OdooCreatedOrder
 
-        return OdooCreatedOrder(id=1690, name="P01690")
+        # Mirrors the real one: it reports what became of the document rather
+        # than raising, because the order exists either way.
+        return OdooCreatedOrder(
+            id=1690,
+            name="P01690",
+            attachment_status="attached" if kwargs.get("attachment") else "none",
+            attachment_id=99 if kwargs.get("attachment") else None,
+        )
+
+    async def fake_document(_invoice: Any):
+        return OdooAttachment(
+            file_name="note.jpg",
+            mime_type="image/jpeg",
+            content=bytes.fromhex("ffd8ff") + b" scan",
+        )
 
     monkeypatch.setattr(poc.odoo_service, "search_by_tokens", fake_search)
     monkeypatch.setattr(poc.odoo_service, "read_names", fake_read_names)
     monkeypatch.setattr(poc.odoo_service, "create_draft_purchase_order", fake_create)
+    # Stubbed, or every test in this file reaches for object storage.
+    monkeypatch.setattr(poc, "read_source_document", fake_document)
     return created
 
 
@@ -225,6 +242,64 @@ class TestCreation:
         assert odoo["date_order"] == "2026-08-17 00:00:00"
 
     @pytest.mark.asyncio
+    async def test_the_scan_goes_onto_the_order(self, odoo, monkeypatch) -> None:
+        """The paper the order was raised from, filed with it.
+
+        Without this the person confirming the RFQ in Odoo has only figures to
+        check against — and a bill raised from the order inside Odoo inherits no
+        document either, which is how the same PDF gets uploaded by hand.
+        """
+        monkeypatch.setattr(poc, "MatchHistoryRepository", _FakeRepo)
+        monkeypatch.setattr(poc, "NotificationService", _FakeNotifier)
+
+        await poc.create_po_for_invoice(
+            _db(),
+            invoice=_invoice(),
+            partner_id=1,
+            order_date="2026-08-17",
+            lines=[
+                {"line_no": 1, "product_id": 5, "description": "J5 (lemon)",
+                 "quantity": 1, "unit_price": 7.02}
+            ],
+            reviewer_id=_uuid(),
+        )
+
+        assert odoo["attachment"] is not None
+        assert odoo["attachment"].file_name == "note.jpg"
+        # And the outcome is recorded, so a missing scan is answerable later
+        # rather than being something nobody can reconstruct.
+        assert _FakeRepo.last["extra"]["odoo_po"]["attachment"] == "attached"
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_scan_does_not_stop_the_order(
+        self, odoo, monkeypatch
+    ) -> None:
+        """Storage being down must not block a purchase order."""
+        monkeypatch.setattr(poc, "MatchHistoryRepository", _FakeRepo)
+        monkeypatch.setattr(poc, "NotificationService", _FakeNotifier)
+
+        async def no_document(_invoice):
+            return None
+
+        monkeypatch.setattr(poc, "read_source_document", no_document)
+
+        invoice = await poc.create_po_for_invoice(
+            _db(),
+            invoice=_invoice(),
+            partner_id=1,
+            order_date="2026-08-17",
+            lines=[
+                {"line_no": 1, "product_id": 5, "description": "J5 (lemon)",
+                 "quantity": 1, "unit_price": 7.02}
+            ],
+            reviewer_id=_uuid(),
+        )
+
+        assert invoice is not None
+        assert odoo["attachment"] is None
+        assert _FakeRepo.last["extra"]["odoo_po"]["attachment"] == "none"
+
+    @pytest.mark.asyncio
     async def test_a_product_archived_since_the_preview_is_caught_first(
         self, odoo
     ) -> None:
@@ -255,7 +330,11 @@ def _invoice():
         id = _uuid()
         tenant_id = "default"
         file_name = "note.jpg"
+        mime_type = "image/jpeg"
+        file_key = "invoices/default/note.jpg"
         uploaded_by = None
+        #: The order's audit blob is written into this, as the bill's is.
+        extra: dict[str, object] = {}
         extracted_json = {
             "vendor_name": "AJK Restaurants",
             "order_date": "2026-08-17",
@@ -278,10 +357,14 @@ def _db():
 
 
 class _FakeRepo:
+    #: What the last update wrote, so a test can read the audit blob back.
+    last: dict[str, Any] = {}
+
     def __init__(self, _db: Any) -> None:
         pass
 
-    async def update(self, _invoice: Any, **_: Any) -> None:
+    async def update(self, _invoice: Any, **fields: Any) -> None:
+        _FakeRepo.last = fields
         return None
 
 

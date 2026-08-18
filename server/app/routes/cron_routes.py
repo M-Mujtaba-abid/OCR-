@@ -26,6 +26,7 @@ from app.lib.logging import get_logger
 from app.lib.responses import ApiResponse
 from app.models.match_history import InvoiceStatus
 from app.repositories.match_history_repository import MatchHistoryRepository
+from app.services.invoice_service import InvoiceService
 from app.services.match_service import run_matching_for_invoice
 from app.services.ocr_service import run_ocr_for_invoice
 
@@ -75,7 +76,14 @@ async def sweep(
     cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(
         minutes=settings.STUCK_AFTER_MINUTES
     )
-    stuck = await MatchHistoryRepository(db).find_stuck(older_than=cutoff)
+    stuck = await MatchHistoryRepository(db).find_stuck(
+        older_than=cutoff,
+        # Extraction is normally started by the uploading client, one call per
+        # invoice. This is the net under that: an upload whose client went away
+        # before it could make the call is picked up here instead of sitting in
+        # `uploaded` forever, looking for all the world like a finished one.
+        include_unstarted=InvoiceService.extraction_enabled(),
+    )
 
     requeued = 0
     for invoice in stuck:

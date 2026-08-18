@@ -44,3 +44,15 @@ export function money(
     maximumFractionDigits: 2,
   })}${currency ? ` ${currency}` : ""}`;
 }
+
+/**
+ * A tax rate held as a fraction, rendered as a percentage.
+ *
+ * Trailing zeroes dropped, because the common rates are whole numbers and
+ * "5.00%" beside a column of money reads as a fourth amount rather than a
+ * rate. Two decimals kept for the ones that need them.
+ */
+export function percent(fraction: number): string {
+  const value = fraction * 100;
+  return `${Number(value.toFixed(2)).toLocaleString()}%`;
+}

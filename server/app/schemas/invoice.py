@@ -396,6 +396,13 @@ class BillPreviewLine(BaseModel):
     #: "matched", and the reviewer is entitled to tell them apart.
     match_score: float | None = None
 
+    #: Odoo's effective tax rate on this line, as a fraction — 0.05 is 5%. A
+    #: rate rather than an amount because the reviewer edits the quantity, and
+    #: an amount computed for the proposed one would be wrong the moment they
+    #: do. Zero means the line carries no tax in Odoo, which is worth seeing per
+    #: line: one untaxed line is what makes a whole bill disagree with the paper.
+    tax_rate: float = 0.0
+
 
 class BillPreviewUnmatchedLine(BaseModel):
     """An invoice line that mapped to nothing on the order.
@@ -461,11 +468,21 @@ class BillPreview(BaseModel):
     lines: list[BillPreviewLine] = Field(default_factory=list)
     unmatched: list[BillPreviewUnmatchedLine] = Field(default_factory=list)
 
-    #: The proposal's untaxed total at the ORDER's prices, and the invoice's own
-    #: untaxed total. Shown side by side because they routinely differ and a
-    #: reviewer should see the gap before posting, not after.
+    #: The proposal at the ORDER's prices, and the invoice's own figures, side
+    #: by side. They routinely differ and a reviewer should see the gap before
+    #: posting, not after.
+    #:
+    #: Tax is carried for the same reason the untaxed total is. Odoo computes it
+    #: from the product and the fiscal position, so a bill can come out at the
+    #: untaxed amount while the vendor's paper charges 5% VAT — and showing only
+    #: the untaxed figure made that look like the bill was dropping the tax when
+    #: it was the order that carried none.
     proposed_untaxed: float = 0.0
+    proposed_tax: float = 0.0
+    proposed_total: float = 0.0
     invoice_untaxed: float | None = None
+    invoice_tax: float | None = None
+    invoice_total: float | None = None
 
     #: The Odoo base URL, so the client deep-links without its own copy of the
     #: setting — exactly as `PoPreview.odoo_url` does.

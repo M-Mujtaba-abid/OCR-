@@ -37,7 +37,7 @@ from app.core.exceptions import (
 )
 from app.lib.logging import get_logger
 from app.schemas.odoo import (
-    BillAttachment,
+    OdooAttachment,
     OdooCreatedBill,
     OdooCreatedOrder,
     OdooExistingBill,
@@ -995,6 +995,7 @@ class OdooService:
         partner_id: int,
         date_order: str,
         order_lines: list[dict[str, Any]],
+        attachment: OdooAttachment | None = None,
     ) -> OdooCreatedOrder:
         """Create an RFQ and read back its number.
 
@@ -1013,6 +1014,13 @@ class OdooService:
             the rest itself (name from its sequence, currency from the partner,
             company and picking type from defaults), and computing them here
             would be guessing at another system's rules.
+
+        The scan is attached to the order when one is given. Without it the
+        person confirming the RFQ in Odoo has nothing but figures to confirm
+        against, and — the part that bites — a bill raised from the order
+        inside Odoo inherits no document either, so somebody uploads the same
+        PDF by hand. Attaching cannot fail the creation: the order exists by
+        then, and `attachment_status` reports what happened.
         """
         if settings.uses_odoo_fixture:
             raise OdooNotConfiguredError(
@@ -1043,6 +1051,24 @@ class OdooService:
                 partner_id,
                 settings.ODOO_PO_DUPLICATE_WINDOW_MINUTES,
             )
+            # Still attached. This branch is reached when a create reached Odoo
+            # and failed on the way back, which is exactly the case where the
+            # attachment never ran — and `_attach` will not duplicate one that
+            # did. Returning the order without its document here would leave a
+            # bare order precisely on the retry meant to heal things.
+            if attachment is not None:
+                status, attachment_id = await self._attach(
+                    client,
+                    res_model="purchase.order",
+                    res_id=existing.id,
+                    attachment=attachment,
+                )
+                return existing.model_copy(
+                    update={
+                        "attachment_status": status,
+                        "attachment_id": attachment_id,
+                    }
+                )
             return existing
 
         values: dict[str, Any] = {
@@ -1065,17 +1091,27 @@ class OdooService:
         )
         name = str(rows[0]["name"]) if rows else f"PO-{po_id}"
 
+        status, attachment_id = "none", None
+        if attachment is not None:
+            status, attachment_id = await self._attach(
+                client, res_model="purchase.order", res_id=po_id, attachment=attachment
+            )
+
         logger.info(
-            "Created draft purchase order %s (%s) for partner %s with %d line(s)",
+            "Created draft purchase order %s (%s) for partner %s with %d line(s), "
+            "attachment=%s",
             name,
             po_id,
             partner_id,
             len(order_lines),
+            status,
         )
         # A new order changes what "open" means, and a cached fetch would keep
         # answering with the set from before it existed.
         clear_fetch_cache()
-        return OdooCreatedOrder(id=po_id, name=name)
+        return OdooCreatedOrder(
+            id=po_id, name=name, attachment_status=status, attachment_id=attachment_id
+        )
 
     # --------------------------------------------------------------- billing
     async def _capabilities(self, model: str) -> frozenset[str]:
@@ -1347,7 +1383,7 @@ class OdooService:
         quantities: dict[int, float],
         vendor_ref: str | None,
         invoice_date: str | None = None,
-        attachment: BillAttachment | None = None,
+        attachment: OdooAttachment | None = None,
     ) -> OdooCreatedBill:
         """Create a DRAFT vendor bill for exactly these quantities.
 
@@ -1443,7 +1479,9 @@ class OdooService:
 
         status, attachment_id = "none", None
         if attachment is not None:
-            status, attachment_id = await self._attach_to_bill(client, bill_id, attachment)
+            status, attachment_id = await self._attach(
+                client, res_model="account.move", res_id=bill_id, attachment=attachment
+            )
 
         clear_fetch_cache()
         logger.info(
@@ -1468,12 +1506,33 @@ class OdooService:
             attachment_id=attachment_id,
         )
 
-    async def _attach_to_bill(
-        self, client: _BlockingOdooClient, bill_id: int, attachment: BillAttachment
+    async def attach_document(
+        self, *, res_model: str, res_id: int, attachment: OdooAttachment
     ) -> tuple[str, int | None]:
-        """Put the scanned document on the bill. Never raises.
+        """Put the scanned document on an Odoo record. Never raises.
 
-        By the time this runs the bill exists and cannot be un-created from
+        Public, and taking the model, because the same document belongs in two
+        places. A reviewer confirming a purchase order in Odoo needs the paper
+        it was raised from just as much as one posting the payable does — and a
+        bill Odoo generates from that order inherits nothing, so attaching only
+        at bill time leaves every order bare and every bill made from one in
+        Odoo bare with it.
+        """
+        return await self._attach(
+            _get_client(), res_model=res_model, res_id=res_id, attachment=attachment
+        )
+
+    async def _attach(
+        self,
+        client: _BlockingOdooClient,
+        *,
+        res_model: str,
+        res_id: int,
+        attachment: OdooAttachment,
+    ) -> tuple[str, int | None]:
+        """The write itself. Never raises; reports what happened instead.
+
+        By the time this runs the record exists and cannot be un-created from
         here, so a failure must not become the request's failure — a bill
         missing its PDF is fixed by a person in ten seconds, whereas answering
         502 for a request that succeeded leaves the reviewer clicking again
@@ -1482,13 +1541,21 @@ class OdooService:
         A plain `ir.attachment`, deliberately NOT `message_post`. That sets
         `message_main_attachment_id`, which on Odoo with `account_invoice_
         extract` installed triggers AI digitisation — and it would happily
-        overwrite the vendor, date, lines and totals just trimmed above.
+        overwrite the vendor, date, lines and totals a bill has just had
+        trimmed. Checked against this deployment: an attachment written this
+        way comes out field-for-field identical to one a person uploads through
+        the chatter, and Odoo lists it in the same place.
+
+        Idempotent by name, because the callers are: the bill flow attaches to
+        an order that may already carry the scan, and a reviewer who clicks
+        twice must not file the same document against the same record twice.
         """
         cap = settings.ODOO_ATTACHMENT_MAX_MB * 1024 * 1024
         if len(attachment.content) > cap:
             logger.warning(
-                "Bill %s: not attaching %s (%.1f MB, over the %d MB limit)",
-                bill_id,
+                "%s %s: not attaching %s (%.1f MB, over the %d MB limit)",
+                res_model,
+                res_id,
                 attachment.file_name,
                 len(attachment.content) / 1_048_576,
                 settings.ODOO_ATTACHMENT_MAX_MB,
@@ -1496,6 +1563,26 @@ class OdooService:
             return "skipped", None
 
         try:
+            already: list[int] = await _run(
+                client.execute,
+                "ir.attachment",
+                "search",
+                [
+                    ("res_model", "=", res_model),
+                    ("res_id", "=", res_id),
+                    ("name", "=", attachment.file_name),
+                ],
+                limit=1,
+            )
+            if already:
+                logger.info(
+                    "%s %s already carries %s — not attaching it twice",
+                    res_model,
+                    res_id,
+                    attachment.file_name,
+                )
+                return "attached", int(already[0])
+
             result = await _run(
                 client.execute,
                 "ir.attachment",
@@ -1510,15 +1597,17 @@ class OdooService:
                         # decodes on the way in — handing the field raw bytes it
                         # then tries to base64-decode a second time.
                         "datas": base64.b64encode(attachment.content).decode("ascii"),
-                        "res_model": "account.move",
-                        "res_id": bill_id,
+                        "res_model": res_model,
+                        "res_id": res_id,
                         "mimetype": attachment.mime_type or "application/octet-stream",
                     }
                 ],
             )
         except Exception:
             logger.exception(
-                "Bill %s was created but the document could not be attached", bill_id
+                "%s %s exists but the document could not be attached",
+                res_model,
+                res_id,
             )
             return "failed", None
 

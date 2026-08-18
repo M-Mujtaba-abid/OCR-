@@ -155,6 +155,26 @@ class Settings(BaseSettings):
     # code change or a redeploy.
     OCR_AUTO_ON_UPLOAD: bool = True
 
+    # WHERE extraction runs — not whether it does. `OCR_AUTO_ON_UPLOAD` above
+    # is still the switch for that.
+    #
+    # False, the default: the upload request returns the moment the rows are
+    # committed, and the client starts each invoice with its own call to
+    # `/invoices/{id}/start`. This is what a serverless platform needs. A
+    # FastAPI background task runs INSIDE the invocation the response is
+    # waiting on, so queueing extraction here made a member watch every
+    # Mistral call finish — 5-20 seconds per file, one after another — before
+    # the upload button stopped spinning. Separate calls also extract in
+    # parallel rather than in sequence.
+    #
+    # True restores the old behaviour, which is right for a long-lived server
+    # (uvicorn sends the response before the task runs) and for any client
+    # that will not make a second call.
+    #
+    # Either way, nothing is stranded: the cron sweep starts any invoice left
+    # sitting in `uploaded`.
+    OCR_IN_UPLOAD_REQUEST: bool = False
+
     # Mistral caps document annotation at 8 pages (plain OCR allows 1000).
     # Past this the service falls back to OCR-then-chat over the markdown.
     OCR_MAX_ANNOTATION_PAGES: int = Field(default=8, ge=1, le=8)

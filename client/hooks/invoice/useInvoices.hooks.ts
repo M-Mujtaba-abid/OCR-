@@ -399,6 +399,24 @@ export function useUploadInvoices() {
         );
       }
 
+      // Extraction is started from here, one call per invoice, and every one
+      // of them is deliberately NOT awaited.
+      //
+      // Not awaited because returning a promise from onSuccess keeps the
+      // mutation pending, which is exactly the spinning upload button this
+      // moved the work out of the upload request to avoid. Per invoice because
+      // each call is its own server invocation, so five files are read in
+      // parallel rather than one after another.
+      //
+      // Failures are swallowed on purpose: the kick is an optimisation, not
+      // the guarantee. The server's cron sweep starts anything still sitting
+      // in `uploaded`, so the worst case of a lost call is a slower invoice,
+      // not a stranded one — and a toast about it would only alarm somebody
+      // whose upload plainly succeeded.
+      for (const invoice of result.uploaded) {
+        void invoiceService.startExtraction(invoice.id).catch(() => {});
+      }
+
       void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.all });
     },
 

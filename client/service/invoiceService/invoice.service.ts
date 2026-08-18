@@ -214,6 +214,26 @@ export const invoiceService = {
 
   /* ----------------------------------------------------------- pipeline */
 
+  /**
+   * Start extraction for an invoice this client just uploaded.
+   *
+   * Separate from `runOcr`, which is an admin re-running any invoice from any
+   * status and needs `invoice.read.all`. This one belongs to the uploader, only
+   * moves a row off `uploaded`, and is idempotent — calling it twice answers
+   * with the status the invoice already has instead of failing.
+   *
+   * The upload response no longer queues extraction server-side: that
+   * background task runs inside the invocation the browser is waiting on, so
+   * it kept the upload button spinning through every Mistral call. One call
+   * per invoice from here puts each in its own request, in parallel.
+   */
+  startExtraction: async (invoiceId: string): Promise<JobAccepted> => {
+    const response = await api.post<ApiResponse<JobAccepted>>(
+      `/invoices/${invoiceId}/start`,
+    );
+    return response.data.data;
+  },
+
   /** Re-run extraction. Answers 202 — poll the invoice for the result. */
   runOcr: async (invoiceId: string): Promise<JobAccepted> => {
     const response = await api.post<ApiResponse<JobAccepted>>(

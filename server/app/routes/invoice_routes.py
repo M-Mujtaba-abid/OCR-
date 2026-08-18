@@ -310,6 +310,31 @@ async def start_ocr(
 
 
 @router.post(
+    "/{invoice_id}/start",
+    response_model=ApiResponse[JobAccepted],
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Start extraction for an invoice you uploaded (requires invoice.create)",
+    responses=ERROR_RESPONSES,
+)
+async def start_upload_extraction(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    controller: Controller,
+    user: CanCreate,
+    background: BackgroundTasks,
+) -> ApiResponse[JobAccepted]:
+    """The call the uploading client makes once per new invoice.
+
+    Separate from `/ocr` rather than a relaxation of it. `/ocr` is an admin's
+    re-run from any status; this one belongs to the member who owns the row,
+    only moves it off `uploaded`, and is idempotent — which is what makes it
+    safe to hand to a browser that may fire it twice.
+    """
+    return await controller.start_upload_extraction(
+        invoice_id=invoice_id, user=user, background=background
+    )
+
+
+@router.post(
     "/{invoice_id}/match",
     response_model=ApiResponse[JobAccepted],
     status_code=status.HTTP_202_ACCEPTED,

@@ -22,7 +22,7 @@ from app.core.exceptions import InvoiceNotReadyError, OverBilledError
 from app.schemas.extraction import ExtractedLineItem
 from app.schemas.invoice import AttachmentStatus, BillOutcome
 from app.schemas.odoo import (
-    BillAttachment,
+    OdooAttachment,
     OdooCreatedBill,
     OdooExistingBill,
     OdooPurchaseOrder,
@@ -30,6 +30,7 @@ from app.schemas.odoo import (
     OdooReceiptResult,
 )
 from app.services import bill_creator_service as bcs
+from app.services import source_document
 
 PO_ID = 1690
 
@@ -93,6 +94,8 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
         "fetched": 0,
     }
 
+    state["attached"] = None
+
     async def fake_fetch_po(po_id: int):
         state["fetched"] += 1
         return state["order"] if po_id == PO_ID else None
@@ -112,7 +115,7 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
 
     async def fake_create_bill(**kwargs: Any) -> OdooCreatedBill:
         state["created"] = kwargs
-        attachment: BillAttachment | None = kwargs.get("attachment")
+        attachment: OdooAttachment | None = kwargs.get("attachment")
         return OdooCreatedBill(
             id=7788,
             name="/",
@@ -124,14 +127,24 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bcs.odoo_service, "fetch_purchase_order", fake_fetch_po)
     monkeypatch.setattr(bcs.odoo_service, "find_vendor_bills", fake_find_bills)
     monkeypatch.setattr(bcs.odoo_service, "receive_purchase_order_lines", fake_receive)
+    async def fake_attach(*, res_model: str, res_id: int, attachment: OdooAttachment):
+        state["attached"] = (res_model, res_id, attachment.file_name)
+        return "attached", 4242
+
     monkeypatch.setattr(bcs.odoo_service, "create_vendor_bill", fake_create_bill)
+    # Stubbed even though the happy path does not reach it: the duplicate branch
+    # does, and an unstubbed one would try to reach the real Odoo from a unit
+    # test — and write to it if it answered.
+    monkeypatch.setattr(bcs.odoo_service, "attach_document", fake_attach)
     monkeypatch.setattr(bcs, "MatchHistoryRepository", _FakeRepo)
     monkeypatch.setattr(bcs, "NotificationService", _FakeNotifier)
 
     async def fake_download(_key: str) -> bytes:
         return b"%PDF-1.4 scanned invoice"
 
-    monkeypatch.setattr(bcs.storage, "download_file", fake_download)
+    # The document reader moved out of this module when the purchase-order
+    # path started needing it too; patch it where it now reads storage.
+    monkeypatch.setattr(source_document.storage, "download_file", fake_download)
     return state
 
 
@@ -509,6 +522,14 @@ class TestCreateBill:
         assert odoo["created"] == {}
         assert odoo["received"] == {}
 
+        # No second bill — but the document still goes onto the one that
+        # exists. This branch is reached by the reviewer who clicked twice, or
+        # whose first attempt created the bill and then failed, and those are
+        # exactly the bills that used to end up with nothing attached and get
+        # a PDF uploaded onto them by hand.
+        assert odoo["attached"] == ("account.move", 555, "invoice.pdf")
+        assert outcome["attachment_status"] is AttachmentStatus.ATTACHED
+
     @pytest.mark.asyncio
     async def test_an_unreadable_document_does_not_stop_the_bill(
         self, odoo, monkeypatch: pytest.MonkeyPatch
@@ -519,7 +540,7 @@ class TestCreateBill:
         async def boom(_key: str) -> bytes:
             raise RuntimeError("R2 is down")
 
-        monkeypatch.setattr(bcs.storage, "download_file", boom)
+        monkeypatch.setattr(source_document.storage, "download_file", boom)
 
         _, outcome = await bcs.create_bill_for_invoice(
             _db(),

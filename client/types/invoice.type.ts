@@ -260,6 +260,12 @@ export interface BillPreviewLine {
   invoice_unit_price: number | null;
   /** 0-100. Null means nothing on the invoice mapped to this order line. */
   match_score: number | null;
+
+  /** Odoo's effective tax rate on this line, as a fraction — 0.05 is 5%.
+   *  A rate, not an amount, because the reviewer edits the quantity. Zero
+   *  means the ORDER carries no tax on this line, which is how a bill comes
+   *  out short against an invoice that charges VAT. */
+  tax_rate: number;
 }
 
 /** An invoice line with no counterpart on the order. Shown, never dropped. */
@@ -300,8 +306,13 @@ export interface BillPreview {
   lines: BillPreviewLine[];
   unmatched: BillPreviewUnmatchedLine[];
 
+  /** The proposal at the ORDER's prices, and the invoice's own figures. */
   proposed_untaxed: number;
+  proposed_tax: number;
+  proposed_total: number;
   invoice_untaxed: number | null;
+  invoice_tax: number | null;
+  invoice_total: number | null;
   odoo_url: string;
 }
 

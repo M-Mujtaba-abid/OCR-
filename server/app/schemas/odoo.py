@@ -64,14 +64,23 @@ class OdooCreatedOrder(BaseModel):
     #: Odoo's own sequence number — "P01690", not the integer id. This is what
     #: a person will look for in Odoo, so it is what the screen must show.
     name: str
+    #: "attached" | "skipped" | "failed" | "none". Reported rather than raised:
+    #: the order exists either way, and a missing scan must not read as a
+    #: failed creation. "none" means no document was offered.
+    attachment_status: str = "none"
+    attachment_id: int | None = None
 
 
-class BillAttachment(NamedTuple):
+class OdooAttachment(NamedTuple):
     """The uploaded invoice, already fetched from storage by the caller.
 
     Bytes rather than an object key, deliberately: `odoo_service` stays free of
     any knowledge of R2, which is the same separation `core/storage.py`
     documents from the other side.
+
+    Named for Odoo rather than for bills because the same document belongs on
+    the purchase order as well — a reviewer confirming an order in Odoo needs
+    the paper it was raised from, exactly as one posting a bill does.
     """
 
     file_name: str

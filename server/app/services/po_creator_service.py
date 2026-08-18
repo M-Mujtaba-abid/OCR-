@@ -44,6 +44,7 @@ from app.schemas.odoo import OdooEntityMatch
 from app.services.matching_engine import normalise_vendor
 from app.services.notification_service import NotificationService
 from app.services.odoo_service import odoo_service
+from app.services.source_document import read_source_document
 
 logger = get_logger(__name__)
 
@@ -225,9 +226,17 @@ async def create_po_for_invoice(
             code="PRODUCT_NOT_FOUND",
         )
 
+    # Read before the write, and never allowed to fail it. This is the document
+    # the whole order was derived from: without it the person confirming the RFQ
+    # in Odoo has only figures to check, and a bill raised from the order inside
+    # Odoo inherits nothing — which is how the same PDF ends up being uploaded
+    # by hand.
+    attachment = await read_source_document(invoice)
+
     created = await odoo_service.create_draft_purchase_order(
         partner_id=partner_id,
         date_order=_as_odoo_datetime(order_date),
+        attachment=attachment,
         order_lines=[
             {
                 "product_id": int(line["product_id"]),  # type: ignore[arg-type]
@@ -255,7 +264,30 @@ async def create_po_for_invoice(
         ),
         reviewed_by=reviewer_id,
         reviewed_at=dt.datetime.now(dt.UTC),
+        # A NEW dict, not a mutation: JSONB is not mutation-tracked, so
+        # `invoice.extra[...] = ...` flushes nothing and the record silently
+        # never lands. Same reason it is written this way for bills.
+        extra={
+            **(invoice.extra or {}),
+            "odoo_po": {
+                "id": created.id,
+                "name": created.name,
+                "attachment": created.attachment_status,
+                "attachment_id": created.attachment_id,
+            },
+        },
     )
+
+    if created.attachment_status not in {"attached", "none"}:
+        # Said out loud rather than swallowed. The order is fine; the document
+        # is not on it, and the person confirming it in Odoo is the one who
+        # will discover that at the worst moment.
+        logger.warning(
+            "Invoice %s: %s was created but the scan is %s",
+            invoice.id,
+            created.name,
+            created.attachment_status,
+        )
 
     if invoice.uploaded_by:
         await NotificationService(db).notify_user(
@@ -269,11 +301,12 @@ async def create_po_for_invoice(
 
     await db.commit()
     logger.info(
-        "Invoice %s: created %s (%s) in Odoo by %s",
+        "Invoice %s: created %s (%s) in Odoo by %s, attachment=%s",
         invoice.id,
         created.name,
         created.id,
         reviewer_id,
+        created.attachment_status,
     )
     return invoice
 
