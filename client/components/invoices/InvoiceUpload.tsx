@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
 import {
@@ -22,6 +22,21 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * The only "same file" signal a browser offers.
+ *
+ * Name and size alone call two different scans of the same one-page form
+ * identical and silently drop the second; `lastModified` separates them.
+ */
+function identity(file: File): string {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+/** Dragged text or a link is not something this dropzone should light up for. */
+function carriesFiles(transfer: DataTransfer): boolean {
+  return transfer.types.includes("Files");
 }
 
 /**
@@ -57,15 +72,41 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
   const { data: limits } = useAppConfig();
   const maxFiles = limits?.max_files_per_upload ?? 0;
 
-  const [staged, setStaged] = useState<Staged[]>([]);
+  // The queue holds Files, not verdicts. See `staged` below.
+  const [files, setFiles] = useState<File[]>([]);
   const [refNo, setRefNo] = useState("");
   const [notes, setNotes] = useState("");
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState(0);
 
+  /**
+   * The queue, with each file's verdict — derived, never stored.
+   *
+   * `limits` arrives one request after the first paint, so anything staged in
+   * that window was checked against nothing. Deriving means those files pick up
+   * their verdict the moment the config resolves, instead of sitting there
+   * looking fine until the server refuses them.
+   */
+  const staged = useMemo<Staged[]>(
+    () => files.map((file) => ({ file, problem: inspect(file, limits) })),
+    [files, limits],
+  );
+
   const uploading = upload.isPending;
   const valid = staged.filter((s) => !s.problem);
   const overLimit = maxFiles > 0 && staged.length > maxFiles;
+
+  /**
+   * What the OS dialog filters by.
+   *
+   * Both forms on purpose: the MIME list is the server's own, and the
+   * extensions cover the file types Windows reports no MIME type for — a .tif
+   * picked with a MIME-only filter is greyed out and cannot be selected.
+   */
+  const accept = useMemo(
+    () => [...(limits?.accepted_mime_types ?? []), ACCEPT_EXTENSIONS].join(","),
+    [limits],
+  );
 
   /**
    * Why the upload button is disabled, in words.
@@ -84,27 +125,35 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
           : null;
 
   const add = useCallback((incoming: FileList | File[]) => {
-    setStaged((current) => {
-      const seen = new Set(current.map((s) => `${s.file.name}:${s.file.size}`));
-      const next = [...current];
-      for (const file of Array.from(incoming)) {
-        // Name AND size is the only available signal for "same file"; dropping
-        // a folder twice should not queue everything twice.
-        const key = `${file.name}:${file.size}`;
-        if (seen.has(key)) continue;
+    // Copied out here, synchronously, and this line is the whole fix for
+    // "the picker closes and no file appears".
+    //
+    // `input.files` is a LIVE FileList owned by the input element. The change
+    // handler clears `input.value` straight after this call — which empties
+    // that very object — and a `setState` updater is not guaranteed to run
+    // before the handler returns. When React defers it, the updater walks an
+    // already-emptied list and stages nothing. Dropping files kept working
+    // because a DataTransfer's list is nobody's to clear.
+    const picked = Array.from(incoming);
+    if (picked.length === 0) return;
+
+    setFiles((current) => {
+      const seen = new Set(current.map(identity));
+      const fresh = picked.filter((file) => {
+        const key = identity(file);
+        if (seen.has(key)) return false;
+        // Guards the incoming batch against itself too, not just the queue.
         seen.add(key);
-        next.push({ file, problem: inspect(file, limits) });
-      }
-      return next;
+        return true;
+      });
+      // Same array back when everything was a duplicate: no render, and no
+      // re-derivation of the verdicts for the whole queue.
+      return fresh.length > 0 ? [...current, ...fresh] : current;
     });
-    // `limits` arrives asynchronously, so a file staged before it lands is
-    // checked against nothing. That is the safe direction — the server still
-    // enforces both — but the callback must see the current value rather than
-    // close over the first one.
-  }, [limits]);
+  }, []);
 
   function reset() {
-    setStaged([]);
+    setFiles([]);
     setRefNo("");
     setNotes("");
     setProgress(0);
@@ -137,11 +186,26 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
     <div className="space-y-5">
       {/* ------------------------------------------------------------ dropzone */}
       <div
+        onDragEnter={(e) => {
+          if (!uploading && carriesFiles(e.dataTransfer)) setDragging(true);
+        }}
         onDragOver={(e) => {
+          if (!carriesFiles(e.dataTransfer)) return;
+          // Without preventDefault the browser treats the page as a non-target
+          // and opens the dropped file instead of handing it over.
           e.preventDefault();
+          // Says "copy" rather than "move" on the cursor — and "no drop" while
+          // an upload is in flight, so the refusal is visible before the drop.
+          e.dataTransfer.dropEffect = uploading ? "none" : "copy";
           if (!uploading) setDragging(true);
         }}
-        onDragLeave={() => setDragging(false)}
+        onDragLeave={(e) => {
+          // dragleave also fires when the pointer crosses onto a child, which
+          // made the highlight strobe as it passed over the icon and the text.
+          // A null relatedTarget means the pointer left the window entirely.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
@@ -197,12 +261,17 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
           ref={inputRef}
           type="file"
           multiple
-          accept={[...(limits?.accepted_mime_types ?? []), ACCEPT_EXTENSIONS].join(",")}
+          accept={accept}
           className="sr-only"
+          // Not disabled while uploading: the browser fires no change event on
+          // a disabled input, and the button above already blocks the click.
           onChange={(e) => {
-            if (e.target.files) add(e.target.files);
-            // Cleared so selecting the same file again still fires onChange.
-            e.target.value = "";
+            const input = e.currentTarget;
+            add(input.files ?? []);
+            // Only now, and only after `add` has copied the list out — clearing
+            // the value empties `input.files`. It is what lets the same file be
+            // picked again after being removed from the queue.
+            input.value = "";
           }}
         />
       </div>
@@ -227,7 +296,9 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
           <ul className="divide-y divide-slate-200 dark:divide-slate-800">
             {staged.map((item, index) => (
               <li
-                key={`${item.file.name}-${item.file.size}-${index}`}
+                // Unique by construction — `add` refuses a file already queued
+                // under this key — so removing a row does not re-key the rest.
+                key={identity(item.file)}
                 className="flex items-center gap-3 px-4 py-3"
               >
                 <span
@@ -257,7 +328,7 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
                 <button
                   type="button"
                   onClick={() =>
-                    setStaged((current) => current.filter((_, i) => i !== index))
+                    setFiles((current) => current.filter((_, i) => i !== index))
                   }
                   disabled={uploading}
                   aria-label={`Remove ${item.file.name}`}
