@@ -273,6 +273,28 @@ export const TRANSIENT_STATUSES = new Set<InvoiceStatus>([
   "matching",
 ]);
 
+/**
+ * Limits the server enforces, served from `/config`.
+ *
+ * Defined once — in the server's environment — and read here. The client keeps
+ * no copy of these numbers.
+ */
+export interface PublicConfig {
+  max_file_bytes: number;
+  max_files_per_upload: number;
+  accepted_mime_types: string[];
+}
+
+/** Where the browser PUTs one file, and what to call it when registering. */
+export interface UploadTicket {
+  /** Server-generated. Never construct one client-side. */
+  key: string;
+  upload_url: string;
+  /** Echoed back so the PUT sends exactly the headers that were signed. */
+  content_type: string;
+  file_name: string;
+}
+
 export interface UploadInput {
   files: File[];
   memberRefNo?: string;

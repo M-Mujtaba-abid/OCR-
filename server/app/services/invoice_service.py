@@ -20,6 +20,7 @@ from app.core.exceptions import (
     BadRequestError,
     ForbiddenError,
     NotFoundError,
+    UnsupportedFileTypeError,
 )
 from app.lib.logging import get_logger
 from app.models.match_history import (
@@ -35,7 +36,10 @@ from app.schemas.invoice import (
     InvoiceStats,
     InvoiceTrend,
     InvoiceTrendPoint,
+    RegisterUploadRequest,
     UploadRejection,
+    UploadTicket,
+    UploadTicketRequest,
 )
 from app.services.notification_service import NotificationService
 from app.services.ocr_service import run_ocr_for_invoice
@@ -46,9 +50,6 @@ logger = get_logger(__name__)
 #: rule or an export can target the whole class of object by prefix.
 INVOICE_FOLDER = "invoices"
 
-#: How long a download link stays valid. Long enough to open a PDF viewer,
-#: short enough that a link pasted into a chat is dead by the time it is read.
-DOWNLOAD_URL_TTL = 300
 
 
 class InvoiceService:
@@ -197,6 +198,174 @@ class InvoiceService:
         )
         return created, rejected
 
+    # ------------------------------------------------------- direct upload
+    async def issue_upload_tickets(
+        self,
+        *,
+        files: Sequence[UploadTicketRequest],
+        tenant_id: str = "default",
+    ) -> list[UploadTicket]:
+        """Signed URLs the browser PUTs its files to, bypassing this API.
+
+        A serverless request body is capped at 4.5 MB and a scanned invoice is
+        routinely larger, so the bytes must not come through here at all.
+
+        The key is built with the same `sanitize_filename` + `build_object_key`
+        the server-side path used, and is generated HERE rather than accepted
+        from the caller — a client that chose its own key could write into
+        another tenant's prefix.
+        """
+        if len(files) > settings.MAX_FILES_PER_UPLOAD:
+            raise BadRequestError(
+                f"Upload at most {settings.MAX_FILES_PER_UPLOAD} files at a time. "
+                f"You sent {len(files)}.",
+                code="TOO_MANY_FILES",
+            )
+
+        tickets: list[UploadTicket] = []
+        for requested in files:
+            # Rejected before a URL is issued when the declared type is not one
+            # we accept. The bytes are still sniffed on the way back in — this
+            # only avoids handing out a ticket that could never be registered.
+            if requested.content_type not in storage.ALLOWED_MIME_TYPES:
+                raise UnsupportedFileTypeError()
+
+            name = storage.sanitize_filename(
+                requested.file_name, fallback_mime=requested.content_type
+            )
+            key = storage.build_object_key(INVOICE_FOLDER, name, tenant_id=tenant_id)
+            tickets.append(
+                UploadTicket(
+                    key=key,
+                    upload_url=await storage.generate_upload_url(
+                        key, mime_type=requested.content_type, original_name=name
+                    ),
+                    content_type=requested.content_type,
+                    file_name=name,
+                )
+            )
+        return tickets
+
+    async def register_uploads(
+        self,
+        *,
+        user: User,
+        files: Sequence[RegisterUploadRequest],
+        member_ref_no: str | None = None,
+        member_notes: str | None = None,
+        tenant_id: str = "default",
+    ) -> tuple[list[MatchHistory], list[UploadRejection]]:
+        """Turn finished uploads into invoice rows.
+
+        The second half of what `upload_invoices` did in one step, and it keeps
+        that method's contract exactly: partial success is normal, each file
+        succeeds or is rejected on its own, and the commit is the commit point.
+
+        What it does NOT keep is any trust in the client. Size and type are
+        re-established from the object itself in `inspect_uploaded_object`, so
+        a caller that claims a 2 KB PDF and uploaded a 40 MB video, or renamed
+        a `.txt`, is refused here rather than at OCR time.
+        """
+        if len(files) > settings.MAX_FILES_PER_UPLOAD:
+            raise BadRequestError(
+                f"Upload at most {settings.MAX_FILES_PER_UPLOAD} files at a time. "
+                f"You sent {len(files)}.",
+                code="TOO_MANY_FILES",
+            )
+
+        created: list[MatchHistory] = []
+        rejected: list[UploadRejection] = []
+
+        try:
+            for entry in files:
+                if not entry.key.startswith(f"{INVOICE_FOLDER}/{tenant_id}/"):
+                    # The key was not one this tenant was issued. Nothing to do
+                    # but refuse — and say so plainly rather than 500.
+                    rejected.append(
+                        UploadRejection(
+                            file_name=entry.file_name,
+                            reason="That upload does not belong to this account.",
+                            code="INVALID_KEY",
+                        )
+                    )
+                    continue
+
+                try:
+                    stored = await storage.inspect_uploaded_object(entry.key)
+                except AppError as exc:
+                    # Same split as the old path: a client fault is one file's
+                    # problem, a 5xx is everybody's and must propagate.
+                    if exc.status_code >= 500:
+                        raise
+                    rejected.append(
+                        UploadRejection(
+                            file_name=entry.file_name,
+                            reason=exc.message,
+                            code=exc.code,
+                        )
+                    )
+                    continue
+
+                created.append(
+                    await self.invoices.create(
+                        tenant_id=tenant_id,
+                        uploaded_by=user.id,
+                        member_ref_no=member_ref_no,
+                        member_notes=member_notes,
+                        file_name=storage.sanitize_filename(
+                            entry.file_name, fallback_mime=stored.mime_type
+                        ),
+                        file_key=stored.key,
+                        file_url=storage.public_url(stored.key),
+                        file_size_bytes=stored.size_bytes,
+                        mime_type=stored.mime_type,
+                        status=InvoiceStatus.UPLOADED,
+                    )
+                )
+
+            if not created:
+                raise BadRequestError(
+                    "None of the files could be accepted.",
+                    code="NO_VALID_FILES",
+                    details=[r.model_dump() for r in rejected],
+                )
+
+            who = (user.full_name or "").strip() or user.email
+            await self.notifications.notify_admins(
+                type=NotificationType.INVOICE_UPLOADED,
+                title=(
+                    f"{len(created)} new invoice{'s' if len(created) > 1 else ''} "
+                    f"from {who}"
+                ),
+                message=(
+                    f"{who} uploaded {len(created)} file"
+                    f"{'s' if len(created) > 1 else ''}"
+                    + (f" (ref {member_ref_no})" if member_ref_no else "")
+                ),
+                match_history_id=created[0].id if len(created) == 1 else None,
+                tenant_id=tenant_id,
+            )
+            await self.db.commit()
+
+        except Exception:
+            await self.db.rollback()
+            # Objects are NOT deleted here, unlike the old path. This request
+            # did not write them, and a failed registration is something the
+            # user retries — deleting their upload would make the retry a
+            # re-upload. A lifecycle rule collects anything never registered.
+            raise
+
+        for invoice in created:
+            await self.db.refresh(invoice, attribute_names=["uploader"])
+
+        logger.info(
+            "User %s registered %d upload(s), %d rejected",
+            user.id,
+            len(created),
+            len(rejected),
+        )
+        return created, rejected
+
     @staticmethod
     def schedule_extraction(
         background: BackgroundTasks, invoices: Sequence[MatchHistory]
@@ -318,8 +487,9 @@ class InvoiceService:
         invoice = await self.get_for_user(
             invoice_id=invoice_id, user=user, can_read_all=can_read_all
         )
-        url = await storage.generate_presigned_url(invoice.file_key, DOWNLOAD_URL_TTL)
-        return invoice, url, DOWNLOAD_URL_TTL
+        ttl = settings.DOWNLOAD_SIGNED_URL_TTL
+        url = await storage.generate_presigned_url(invoice.file_key, ttl)
+        return invoice, url, ttl
 
     async def get_stats(
         self, *, user: User | None = None, tenant_id: str = "default"

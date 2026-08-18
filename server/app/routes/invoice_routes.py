@@ -45,8 +45,11 @@ from app.schemas.invoice import (
     InvoiceTrend,
     JobAccepted,
     PoPreview,
+    RegisterUploadsRequest,
     RejectInvoiceRequest,
     UploadResult,
+    UploadTicket,
+    UploadTicketsRequest,
 )
 from app.services.invoice_service import InvoiceService
 
@@ -103,6 +106,43 @@ async def upload_invoices(
         member_ref_no=member_ref_no,
         member_notes=member_notes,
         background=background,
+    )
+
+
+@router.post(
+    "/upload-url",
+    response_model=ApiResponse[list[UploadTicket]],
+    summary="Signed URLs for uploading files straight to storage",
+    responses=ERROR_RESPONSES,
+)
+async def upload_urls(
+    payload: UploadTicketsRequest,
+    controller: Controller,
+    _user: CanCreate,
+) -> ApiResponse[list[UploadTicket]]:
+    """Step 1 of 2. The browser PUTs each file to the URL returned here, then
+    calls `/register`. Bytes never pass through this API — a serverless request
+    body is capped at 4.5 MB and invoices are routinely larger."""
+    return await controller.upload_tickets(payload=payload)
+
+
+@router.post(
+    "/register",
+    response_model=ApiResponse[UploadResult],
+    status_code=status.HTTP_201_CREATED,
+    summary="Turn finished uploads into invoices",
+    responses=ERROR_RESPONSES,
+)
+async def register_uploads(
+    payload: RegisterUploadsRequest,
+    controller: Controller,
+    user: CanCreate,
+    background: BackgroundTasks,
+) -> ApiResponse[UploadResult]:
+    """Step 2 of 2. Each object's size and type are re-read from storage here,
+    so nothing the client claimed about the file is taken on trust."""
+    return await controller.register_uploads(
+        user=user, payload=payload, background=background
     )
 
 

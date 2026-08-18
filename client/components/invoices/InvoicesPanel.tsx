@@ -7,9 +7,8 @@ import {
   useInvoiceQueue,
   useMyInvoices,
 } from "@/hooks/invoice/useInvoices.hooks";
+import { PAGE_SIZE } from "@/lib/env";
 import type { InvoiceStatus } from "@/types/invoice.type";
-
-const PAGE_SIZE = 10;
 
 interface Props {
   /** "mine" hits /invoices/my; "all" hits /invoices/admin/queue. */

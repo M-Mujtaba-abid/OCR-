@@ -22,6 +22,7 @@ from app.lib.logging import configure_logging, get_logger
 from app.lib.responses import ApiResponse
 from app.middleware.request_context import RequestContextMiddleware
 from app.routes import api_router
+from app.routes.cron_routes import router as cron_router
 from app.services.ocr_service import reap_stuck_invoices
 
 logger = get_logger(__name__)
@@ -93,6 +94,10 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+    # Deliberately OUTSIDE the versioned prefix: platform plumbing, not part of
+    # the product's API. The path in vercel.json's `crons` must match this.
+    app.include_router(cron_router)
 
     # ---- unversioned utility endpoints (preserved from the original app) ----
     @app.get("/hello", tags=["demo"], response_model=ApiResponse[dict[str, str]])

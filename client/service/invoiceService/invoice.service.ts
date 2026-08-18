@@ -1,3 +1,5 @@
+import axios, { type AxiosProgressEvent } from "axios";
+
 import api, { UPLOAD_TIMEOUT } from "@/service/api";
 import type { ApiResponse, Paginated } from "@/types/api.type";
 import type {
@@ -10,21 +12,27 @@ import type {
   InvoiceTrend,
   JobAccepted,
   PoPreview,
+  PublicConfig,
+  UploadTicket,
   UploadInput,
   UploadResult,
 } from "@/types/invoice.type";
 
-/** Mirrors the backend's UPLOAD_MAX_SIZE_MB / MAX_FILES_PER_UPLOAD. */
-export const MAX_FILES = 10;
-export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const ACCEPTED_MIME = [
-  "application/pdf",
-  "image/png",
-  "image/jpeg",
-  "image/tiff",
-] as const;
-
 export const invoiceService = {
+  /**
+   * The limits the server will enforce.
+   *
+   * Fetched rather than duplicated. These used to be constants here with a
+   * comment saying they mirrored the backend — which is two definitions of one
+   * number, and the failure is quiet either way round: a browser that refuses
+   * a file the server would have taken, or one that uploads a file the server
+   * then rejects after the whole transfer.
+   */
+  config: async (): Promise<PublicConfig> => {
+    const response = await api.get<ApiResponse<PublicConfig>>("/config");
+    return response.data.data;
+  },
+
   /**
    * Upload 1..MAX_FILES invoices.
    *
@@ -42,24 +50,64 @@ export const invoiceService = {
     memberNotes,
     onProgress,
   }: UploadInput): Promise<UploadResult> => {
-    const form = new FormData();
-    // Repeated "files" parts — what FastAPI's `list[UploadFile]` expects and
-    // what a native <input multiple> produces.
-    for (const file of files) form.append("files", file, file.name);
-    if (memberRefNo?.trim()) form.append("member_ref_no", memberRefNo.trim());
-    if (memberNotes?.trim()) form.append("member_notes", memberNotes.trim());
+    // Three steps, because the bytes must not come through the API: a
+    // serverless request body is capped at 4.5 MB and a scanned invoice is
+    // routinely larger. The file goes browser -> storage directly; the API
+    // only ever sees the key.
 
+    // 1. Ask for a signed URL per file. The server names the object.
+    const tickets = (
+      await api.post<ApiResponse<UploadTicket[]>>("/invoices/upload-url", {
+        files: files.map((file) => ({
+          file_name: file.name,
+          content_type: file.type || "application/octet-stream",
+        })),
+      })
+    ).data.data;
+
+    // 2. PUT each file straight to storage.
+    //
+    // A BARE axios call, not the shared `api` instance. That one carries the
+    // access token and `withCredentials: true` — sending either to Cloudflare
+    // would hand a third party our bearer token, and a credentialed
+    // cross-origin request fails CORS against a bucket anyway.
+    //
+    // The headers must match what was signed exactly, or R2 rejects the PUT.
+    const sent = new Array<number>(files.length).fill(0);
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0) || 1;
+
+    await Promise.all(
+      tickets.map((ticket, index) =>
+        axios.put(ticket.upload_url, files[index], {
+          timeout: UPLOAD_TIMEOUT,
+          headers: {
+            "Content-Type": ticket.content_type,
+            "Content-Disposition": `inline; filename="${ticket.file_name}"`,
+          },
+          onUploadProgress: (event: AxiosProgressEvent) => {
+            sent[index] = event.loaded;
+            const done = sent.reduce((a, b) => a + b, 0);
+            onProgress?.(Math.min(99, Math.round((done / totalBytes) * 100)));
+          },
+        }),
+      ),
+    );
+
+    // 3. Register them. The server re-reads each object's real size and type
+    // from storage — nothing claimed here is taken on trust — and only then
+    // creates the rows and queues extraction.
     const response = await api.post<ApiResponse<UploadResult>>(
-      "/invoices/upload",
-      form,
+      "/invoices/register",
       {
-        timeout: UPLOAD_TIMEOUT,
-        onUploadProgress: (event) => {
-          if (!event.total) return;
-          onProgress?.(Math.round((event.loaded / event.total) * 100));
-        },
+        files: tickets.map((ticket) => ({
+          key: ticket.key,
+          file_name: ticket.file_name,
+        })),
+        member_ref_no: memberRefNo?.trim() || null,
+        member_notes: memberNotes?.trim() || null,
       },
     );
+    onProgress?.(100);
     return response.data.data;
   },
 

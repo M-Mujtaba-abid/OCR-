@@ -17,6 +17,9 @@ export const queryKeys = {
   /** The signed-in user plus their permissions. */
   session: ["session"] as const,
 
+  /** Server-enforced limits. Changes only when an env var does. */
+  config: ["config"] as const,
+
   invoices: {
     /** Everything invoice-shaped. Reach for it only when everything changed. */
     all: ["invoices"] as const,

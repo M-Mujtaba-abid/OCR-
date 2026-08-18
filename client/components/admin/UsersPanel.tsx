@@ -10,12 +10,11 @@ import {
   useSetUserActive,
   useUsers,
 } from "@/hooks/user/useUsers.hooks";
+import { PAGE_SIZE } from "@/lib/env";
 import { ROLE_LABEL } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/user.type";
 
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
-const PAGE_SIZE = 10;
-
 const ROLE_TONE: Record<UserRole, "neutral" | "warning" | "accent"> = {
   member: "neutral",
   manager: "warning",

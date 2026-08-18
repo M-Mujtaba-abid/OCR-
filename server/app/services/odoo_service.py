@@ -270,6 +270,15 @@ def _load_fixture() -> list[OdooPurchaseOrder]:
     without anybody realising is a far worse failure than no purchase orders,
     so every fetch says so in the log and /odoo/connection reports it too.
     """
+    # Belt and braces. `_enforce_production_safety` already refuses to boot a
+    # production process that could reach here, so this can only fire if some
+    # future code path calls the fixture loader directly — and the cost of
+    # being wrong about that is a bill raised against an invented order.
+    if settings.ENVIRONMENT == "production":
+        raise RuntimeError(
+            "CRITICAL: purchase-order fixtures are disabled in production."
+        )
+
     path = Path(settings.ODOO_FIXTURE_PATH)
     if not path.is_absolute():
         # Relative to the server package root, so the same .env value works

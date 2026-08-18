@@ -144,6 +144,45 @@ class InvoiceStats(BaseModel):
     open_count: int
 
 
+class UploadTicketRequest(BaseModel):
+    """One file the browser is about to send straight to storage."""
+
+    file_name: str = Field(min_length=1, max_length=255)
+    #: Declared by the client and signed into the URL, so the object cannot be
+    #: stored as anything else. It is NOT trusted as the truth about the file —
+    #: the bytes are sniffed after upload, in `register`.
+    content_type: str = Field(min_length=3, max_length=100)
+
+
+class UploadTicket(BaseModel):
+    """Where to PUT one file, and what to call it afterwards."""
+
+    #: Server-generated, always. A client-supplied key would let one tenant
+    #: write into another's prefix.
+    key: str
+    upload_url: str
+    #: Echoed back so the browser sends exactly the headers that were signed.
+    content_type: str
+    file_name: str
+
+
+class UploadTicketsRequest(BaseModel):
+    files: list[UploadTicketRequest] = Field(min_length=1)
+
+
+class RegisterUploadRequest(BaseModel):
+    """One object the browser says it finished uploading."""
+
+    key: str = Field(min_length=1, max_length=512)
+    file_name: str = Field(min_length=1, max_length=255)
+
+
+class RegisterUploadsRequest(BaseModel):
+    files: list[RegisterUploadRequest] = Field(min_length=1)
+    member_ref_no: str | None = Field(default=None, max_length=120)
+    member_notes: str | None = None
+
+
 class InvoiceTrendPoint(BaseModel):
     """One day on the dashboard's trend chart."""
 

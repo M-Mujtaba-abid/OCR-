@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import ssl
 from collections.abc import AsyncIterator
+from typing import Any
 
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -25,6 +28,21 @@ _ssl_context = ssl.create_default_context()
 # is the fix. On a direct (non-pooler) endpoint this is merely a small cost.
 _statement_cache_size = 0 if settings.is_pooled else 100
 
+# On a serverless platform every warm instance keeps its OWN pool, so the
+# settings that are right for one long-lived process become a connection storm
+# across dozens of short-lived ones — five each, plus overflow, against a
+# database that caps them. NullPool hands the pooling job to the one process
+# equipped to do it: Neon's own pooler, which the DSN already points at.
+#
+# `VERCEL` is set by the platform, so this needs no configuration of its own
+# and cannot be wrong locally.
+_serverless = bool(os.getenv("VERCEL"))
+_pool_options: dict[str, Any] = (
+    {"poolclass": NullPool}
+    if _serverless
+    else {"pool_size": 5, "max_overflow": 10, "pool_recycle": 300}
+)
+
 engine: AsyncEngine = create_async_engine(
     settings.async_dsn,
     echo=settings.DEBUG,
@@ -39,9 +57,8 @@ engine: AsyncEngine = create_async_engine(
     # the dead-connection case is handled locally instead of at 500 ms a time.
     # Set DB_POOL_PRE_PING=true to put it back without a code change.
     pool_pre_ping=settings.DB_POOL_PRE_PING,
-    pool_size=5,
-    max_overflow=10,
-    pool_recycle=300,        # recycle before Neon's idle timeout closes them
+    # pool_size / max_overflow / pool_recycle, or NullPool under serverless.
+    **_pool_options,
     # NOTE: the dialect-level `prepared_statement_cache_size` is set as a URL
     # param in core/config.py — create_async_engine() rejects it as a kwarg.
     connect_args={

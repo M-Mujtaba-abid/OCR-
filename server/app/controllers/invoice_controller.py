@@ -22,8 +22,11 @@ from app.schemas.invoice import (
     InvoiceTrend,
     JobAccepted,
     PoPreview,
+    RegisterUploadsRequest,
     RejectInvoiceRequest,
     UploadResult,
+    UploadTicket,
+    UploadTicketsRequest,
 )
 from app.services.invoice_service import InvoiceService
 from app.services.match_service import (
@@ -241,6 +244,38 @@ class InvoiceController:
             message=(
                 "Match corrected" if updated.was_corrected else "Match confirmed"
             ),
+        )
+
+    async def upload_tickets(
+        self, *, payload: UploadTicketsRequest
+    ) -> ApiResponse[list[UploadTicket]]:
+        """Signed URLs the browser uploads to directly."""
+        return ApiResponse.ok(
+            await self.service.issue_upload_tickets(files=payload.files)
+        )
+
+    async def register_uploads(
+        self,
+        *,
+        user: User,
+        payload: RegisterUploadsRequest,
+        background: BackgroundTasks,
+    ) -> ApiResponse[UploadResult]:
+        created, rejected = await self.service.register_uploads(
+            user=user,
+            files=payload.files,
+            member_ref_no=payload.member_ref_no,
+            member_notes=payload.member_notes,
+        )
+        # Queued after the response body is built, exactly as the old upload
+        # path did — the member must not wait for Mistral.
+        self.service.schedule_extraction(background, created)
+        return ApiResponse.ok(
+            UploadResult(
+                uploaded=[InvoiceListItem.model_validate(i) for i in created],
+                rejected=rejected,
+            ),
+            message=f"{len(created)} invoice(s) uploaded",
         )
 
     async def trend(self, *, days: int) -> ApiResponse[InvoiceTrend]:

@@ -5,6 +5,12 @@ import axios, {
 } from "axios";
 
 import {
+  API_PREFIX,
+  BACKEND_URL,
+  REQUEST_TIMEOUT,
+  UPLOAD_TIMEOUT,
+} from "@/lib/env";
+import {
   clearAuthSession,
   getAccessToken,
   notifySessionExpired,
@@ -20,21 +26,16 @@ import type { TokenData } from "@/types/user.type";
  * written anywhere else in the app, so pointing the frontend at staging is a
  * one-line change and there is no `localhost` to forget in production.
  */
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
-
-export const API_PREFIX = "/api/v1";
-
 const api = axios.create({
   baseURL: `${BACKEND_URL}${API_PREFIX}`,
   // Sends the HttpOnly refresh cookie cross-origin. Without it, refresh can
   // never work and every session dies when the access token expires.
   withCredentials: true,
   headers: { Accept: "application/json" },
-  timeout: 30_000,
+  timeout: REQUEST_TIMEOUT,
 });
 
-/** Uploads need far longer than a JSON call — set per request, not globally. */
-export const UPLOAD_TIMEOUT = 120_000;
+export { API_PREFIX, UPLOAD_TIMEOUT };
 
 /* -------------------------------------------------------------------------
  * Errors

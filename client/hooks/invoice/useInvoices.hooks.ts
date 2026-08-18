@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
 
+import { POLL_MS } from "@/lib/env";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/service/api";
 import { invoiceService } from "@/service/invoiceService/invoice.service";
@@ -22,8 +23,20 @@ import {
   type UploadResult,
 } from "@/types/invoice.type";
 
-/** Poll cadence while the server is still working on something. */
-const POLL_MS = 3000;
+/**
+ * The limits the server enforces — size, count, accepted types.
+ *
+ * Long-lived on purpose: these change when someone edits an environment
+ * variable, not during a session. `staleTime: Infinity` means one fetch per
+ * page load and no refetch storm behind an upload screen.
+ */
+export function useAppConfig() {
+  return useQuery({
+    queryKey: queryKeys.config,
+    queryFn: () => invoiceService.config(),
+    staleTime: Infinity,
+  });
+}
 
 /**
  * Refetch only while a row is mid-pipeline.

@@ -407,6 +407,119 @@ async def generate_presigned_url(key: str, expires: int = 3600) -> str:
     return url
 
 
+async def generate_upload_url(
+    key: str, *, mime_type: str, original_name: str, expires: int | None = None
+) -> str:
+    """A time-limited URL the BROWSER can PUT one object to.
+
+    This exists because a serverless request body is capped at 4.5 MB, which a
+    scanned invoice routinely exceeds. Sending the bytes straight from the
+    browser to R2 takes the platform out of the path entirely — the API only
+    ever handles the key.
+
+    `ContentType` and `ContentDisposition` are signed INTO the URL, so the
+    client cannot store the object as some other type than the one the server
+    approved: a request whose headers do not match the signature is refused by
+    R2, not by us.
+    """
+    ttl = max(
+        1, min(expires or settings.UPLOAD_SIGNED_URL_TTL, _MAX_PRESIGN_SECONDS)
+    )
+    try:
+        url: str = await anyio.to_thread.run_sync(
+            functools.partial(
+                get_r2_client().generate_presigned_url,
+                "put_object",
+                Params={
+                    "Bucket": settings.R2_BUCKET_NAME,
+                    "Key": key,
+                    "ContentType": mime_type,
+                    "ContentDisposition": f'inline; filename="{original_name}"',
+                },
+                ExpiresIn=ttl,
+            )
+        )
+    except (ClientError, BotoCoreError) as exc:
+        logger.exception("Upload presign failed for key=%s", key)
+        raise StorageError() from exc
+    return url
+
+
+class StoredObject(BaseModel):
+    """What R2 says is actually there, after a direct upload."""
+
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    size_bytes: int
+    #: Sniffed from the object's own leading bytes, never from what the client
+    #: declared. This is the check the old server-side upload did in
+    #: `_read_and_validate`, moved to the far side of the transfer.
+    mime_type: str
+
+
+async def inspect_uploaded_object(key: str) -> StoredObject:
+    """Confirm an object exists and is what it claims to be.
+
+    The trust boundary for direct upload. Between handing out a signed URL and
+    being told "it's there", the only things known for certain are what R2 will
+    tell us — so both the size and the type are re-established here rather than
+    taken from the client:
+
+      * HeadObject for the true byte count, checked against the same limit the
+        old path enforced while reading.
+      * A ranged GET of the first bytes for the magic number, so a `.txt`
+        renamed to `.pdf` is refused exactly as it was before.
+
+    Raises the same typed errors the old path raised, so callers already
+    written to catch them keep working.
+    """
+
+    def _head() -> int:
+        response = get_r2_client().head_object(
+            Bucket=settings.R2_BUCKET_NAME, Key=key
+        )
+        return int(response["ContentLength"])
+
+    def _head_bytes() -> bytes:
+        response = get_r2_client().get_object(
+            Bucket=settings.R2_BUCKET_NAME,
+            Key=key,
+            Range=f"bytes=0-{_SNIFF_BYTES - 1}",
+        )
+        return bytes(response["Body"].read())
+
+    try:
+        size = await anyio.to_thread.run_sync(_head)
+    except ClientError as exc:
+        # A key that was never written, or was written to a prefix this caller
+        # does not own — either way there is nothing to register.
+        logger.info("Register refused: no object at key=%s", key)
+        raise EmptyFileError("That upload did not complete.") from exc
+    except BotoCoreError as exc:
+        logger.exception("HeadObject failed for key=%s", key)
+        raise StorageError() from exc
+
+    if size == 0:
+        raise EmptyFileError()
+    if size > settings.upload_max_size_bytes:
+        raise FileTooLargeError(
+            f"File exceeds the {settings.UPLOAD_MAX_SIZE_MB} MB limit."
+        )
+
+    try:
+        head = await anyio.to_thread.run_sync(_head_bytes)
+    except (ClientError, BotoCoreError) as exc:
+        logger.exception("Range read failed for key=%s", key)
+        raise StorageError() from exc
+
+    mime_type = sniff_mime_type(head)
+    if mime_type is None or mime_type not in ALLOWED_MIME_TYPES:
+        raise UnsupportedFileTypeError()
+
+    return StoredObject(key=key, size_bytes=size, mime_type=mime_type)
+
+
 async def check_storage() -> bool:
     """Cheap connectivity probe for /health/ready.
 

@@ -3,22 +3,14 @@
 import { useCallback, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/Button";
-import { useUploadInvoices } from "@/hooks/invoice/useInvoices.hooks";
 import {
-  ACCEPTED_MIME,
-  MAX_FILES,
-  MAX_FILE_BYTES,
-} from "@/service/invoiceService/invoice.service";
+  useAppConfig,
+  useUploadInvoices,
+} from "@/hooks/invoice/useInvoices.hooks";
+import type { PublicConfig } from "@/types/invoice.type";
 
-const ACCEPT_ATTR = [
-  ...ACCEPTED_MIME,
-  ".pdf",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".tif",
-  ".tiff",
-].join(",");
+/** Extensions the file picker suggests, alongside the server's MIME list. */
+const ACCEPT_EXTENSIONS = ".pdf,.png,.jpg,.jpeg,.tif,.tiff";
 
 /** A file plus why it cannot be sent. `null` means it is fine. */
 interface Staged {
@@ -40,14 +32,19 @@ function formatBytes(bytes: number): string {
  * re-checks the size, because a browser's `File.type` is derived from the file
  * extension and is trivially wrong.
  */
-function inspect(file: File): string | null {
+function inspect(file: File, limits: PublicConfig | undefined): string | null {
   if (file.size === 0) return "File is empty";
-  if (file.size > MAX_FILE_BYTES) {
-    return `Too large (${formatBytes(file.size)}, limit ${formatBytes(MAX_FILE_BYTES)})`;
+  // Until the limits arrive there is nothing to check against, and inventing a
+  // number here would recreate the duplication this removed. The server
+  // enforces them regardless; this only saves the user a wasted upload.
+  if (!limits) return null;
+
+  if (file.size > limits.max_file_bytes) {
+    return `Too large (${formatBytes(file.size)}, limit ${formatBytes(limits.max_file_bytes)})`;
   }
   // Some browsers report an empty type for .tif — let those through and let the
   // server's content sniffing decide.
-  if (file.type && !ACCEPTED_MIME.includes(file.type as (typeof ACCEPTED_MIME)[number])) {
+  if (file.type && !limits.accepted_mime_types.includes(file.type)) {
     return "Unsupported format";
   }
   return null;
@@ -56,6 +53,9 @@ function inspect(file: File): string | null {
 export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const upload = useUploadInvoices();
+  // The server's limits, fetched once. This component holds no copy of them.
+  const { data: limits } = useAppConfig();
+  const maxFiles = limits?.max_files_per_upload ?? 0;
 
   const [staged, setStaged] = useState<Staged[]>([]);
   const [refNo, setRefNo] = useState("");
@@ -65,7 +65,7 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
 
   const uploading = upload.isPending;
   const valid = staged.filter((s) => !s.problem);
-  const overLimit = staged.length > MAX_FILES;
+  const overLimit = maxFiles > 0 && staged.length > maxFiles;
 
   /**
    * Why the upload button is disabled, in words.
@@ -78,7 +78,7 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
     : staged.length === 0
       ? "Choose at least one file to upload."
       : overLimit
-        ? `Remove ${staged.length - MAX_FILES} file${staged.length - MAX_FILES === 1 ? "" : "s"} — the limit is ${MAX_FILES} per upload.`
+        ? `Remove ${staged.length - maxFiles} file${staged.length - maxFiles === 1 ? "" : "s"} — the limit is ${maxFiles} per upload.`
         : valid.length === 0
           ? "None of the selected files can be uploaded."
           : null;
@@ -93,11 +93,15 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
         const key = `${file.name}:${file.size}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        next.push({ file, problem: inspect(file) });
+        next.push({ file, problem: inspect(file, limits) });
       }
       return next;
     });
-  }, []);
+    // `limits` arrives asynchronously, so a file staged before it lands is
+    // checked against nothing. That is the safe direction — the server still
+    // enforces both — but the callback must see the current value rather than
+    // close over the first one.
+  }, [limits]);
 
   function reset() {
     setStaged([]);
@@ -168,8 +172,14 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
           Drop invoices here
         </p>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          PDF, PNG, JPEG or TIFF · up to {formatBytes(MAX_FILE_BYTES)} each ·{" "}
-          {MAX_FILES} files per upload
+          PDF, PNG, JPEG or TIFF
+          {limits && (
+            <>
+              {" "}
+              · up to {formatBytes(limits.max_file_bytes)} each · {maxFiles} files
+              per upload
+            </>
+          )}
         </p>
 
         <div className="mt-4">
@@ -187,7 +197,7 @@ export function InvoiceUpload({ onUploaded }: { onUploaded: () => void }) {
           ref={inputRef}
           type="file"
           multiple
-          accept={ACCEPT_ATTR}
+          accept={[...(limits?.accepted_mime_types ?? []), ACCEPT_EXTENSIONS].join(",")}
           className="sr-only"
           onChange={(e) => {
             if (e.target.files) add(e.target.files);

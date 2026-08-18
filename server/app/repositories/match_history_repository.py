@@ -186,6 +186,37 @@ class MatchHistoryRepository:
             stmt = stmt.where(MatchHistory.uploaded_by == user_id)
         return {status: int(n) for status, n in (await self.db.execute(stmt)).all()}
 
+    async def find_stuck(
+        self, *, older_than: dt.datetime, limit: int = 20
+    ) -> list[MatchHistory]:
+        """Invoices that entered a transient status and never left it.
+
+        On a serverless platform the pipeline runs inside the request, so a
+        Mistral call that outlives the function's `maxDuration` is killed
+        mid-flight — leaving a row in `ocr_processing` with nothing scheduled
+        to ever touch it again. There is no failure to see, which is what makes
+        it worth sweeping for.
+
+        `updated_at` is the clock: it moves on every status change, so a row
+        that has not moved in this long is not merely slow.
+        """
+        stmt = (
+            select(MatchHistory)
+            .where(
+                MatchHistory.status.in_(
+                    [
+                        InvoiceStatus.OCR_QUEUED,
+                        InvoiceStatus.OCR_PROCESSING,
+                        InvoiceStatus.MATCHING,
+                    ]
+                ),
+                MatchHistory.updated_at < older_than,
+            )
+            .order_by(MatchHistory.updated_at)
+            .limit(limit)
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
     async def daily_counts(
         self, *, since: dt.date, tenant_id: str = "default"
     ) -> list[tuple[dt.date, int, int]]:

@@ -58,6 +58,18 @@ class Settings(BaseSettings):
     # database on the same continent makes the ping cheap again.
     DB_POOL_PRE_PING: bool = False
 
+    # Shared secret for the scheduled-maintenance endpoints. Vercel sends it as
+    # `Authorization: Bearer <secret>` on every cron invocation. Empty means the
+    # endpoints refuse everything — an unauthenticated route that re-queues OCR
+    # work is a way for anybody to spend the Mistral budget.
+    CRON_SECRET: SecretStr = SecretStr("")
+
+    # How long an invoice may sit in a transient status before the sweeper
+    # presumes its processing was cut short and starts it again. Must stay
+    # comfortably above the platform's function ceiling, or a job that is
+    # merely slow gets restarted underneath itself.
+    STUCK_AFTER_MINUTES: int = Field(default=10, ge=2, le=1440)
+
     # NoDecode stops pydantic-settings from json.loads()-ing the raw env string
     # before the validator runs, which is what lets `A,B` work as well as JSON.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
@@ -150,6 +162,16 @@ class Settings(BaseSettings):
     # How long the signed URL handed to Mistral stays valid. Long enough for a
     # large PDF to be fetched, short enough that a leaked log line is useless.
     OCR_SIGNED_URL_TTL: int = Field(default=600, ge=60, le=3600)
+
+    # How long a browser has to finish PUTting one file straight to storage.
+    # Generous, because this covers a large scan on a slow connection — and it
+    # is a write to a key the server chose, so a long window grants little.
+    UPLOAD_SIGNED_URL_TTL: int = Field(default=900, ge=60, le=3600)
+
+    # How long a download link handed to a reviewer stays valid. Short: it is
+    # minted on click and used immediately, and a URL that outlives the click
+    # is one that can be forwarded.
+    DOWNLOAD_SIGNED_URL_TTL: int = Field(default=300, ge=30, le=3600)
 
     # ---------------------------------------------------------------- Odoo
     ODOO_URL: str = ""
@@ -285,7 +307,24 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT != "production":
             return self
 
+        # Raised, not collected. The others below are a misconfiguration to
+        # report together; this one is a refusal. `uses_odoo_fixture` turns on
+        # whenever ODOO_URL is empty and a fixture path is set, which would put
+        # FABRICATED purchase orders in front of an accounts-payable reviewer —
+        # loudly logged, but by then a bill could already have been raised
+        # against an order that never existed.
+        if not self.ODOO_URL.strip():
+            raise RuntimeError(
+                "CRITICAL: ODOO_URL is required in production. "
+                "Mock fixtures are disabled."
+            )
+
         problems: list[str] = []
+        if self.ODOO_FIXTURE_PATH:
+            problems.append(
+                "ODOO_FIXTURE_PATH must not be set in production — it is the "
+                "development path and serves invented purchase orders"
+            )
         if not self.model_fields_set.intersection({"JWT_SECRET_KEY"}):
             problems.append("JWT_SECRET_KEY must be set explicitly in production")
         if len(self.JWT_SECRET_KEY.get_secret_value()) < 32:
