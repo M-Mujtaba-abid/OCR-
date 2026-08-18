@@ -36,7 +36,10 @@ from app.lib.responses import ApiErrorResponse, ApiResponse, PaginatedData
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
 from app.schemas.invoice import (
+    BillPreview,
     ConfirmMatchRequest,
+    CreateBillRequest,
+    CreateBillResult,
     CreatePoRequest,
     FileLink,
     InvoiceDetail,
@@ -75,6 +78,10 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     401: {"model": ApiErrorResponse},
     403: {"model": ApiErrorResponse},
     404: {"model": ApiErrorResponse},
+    # Every pipeline step that needs an earlier one to have finished answers
+    # this — confirming, creating an order, creating a bill. It was missing from
+    # the documented responses while three routes already raised it.
+    409: {"model": ApiErrorResponse},
     413: {"model": ApiErrorResponse},
     415: {"model": ApiErrorResponse},
     422: {"model": ApiErrorResponse},
@@ -365,6 +372,50 @@ async def create_purchase_order(
     confirming there — and the mapping in the payload is the one a reviewer
     approved, not one resolved on the server."""
     return await controller.create_po(invoice_id=invoice_id, user=user, payload=payload)
+
+
+@router.get(
+    "/{invoice_id}/bill-preview",
+    response_model=ApiResponse[BillPreview],
+    summary="What billing this invoice against its matched order would produce",
+    responses=ERROR_RESPONSES,
+)
+async def bill_preview(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    controller: Controller,
+    user: CanApprove,
+) -> ApiResponse[BillPreview]:
+    """Read-only. Proposes which order line each invoice line means and shows
+    what is left to bill on each — one order is billed across several invoices
+    over time, so "remaining" is read from Odoo and never remembered here."""
+    return await controller.bill_preview(invoice_id=invoice_id, user=user)
+
+
+@router.post(
+    "/{invoice_id}/create-bill",
+    response_model=ApiResponse[CreateBillResult],
+    summary="Create a draft vendor bill in Odoo from this invoice",
+    responses=ERROR_RESPONSES,
+)
+async def create_vendor_bill(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    payload: CreateBillRequest,
+    controller: Controller,
+    user: CanApprove,
+) -> ApiResponse[CreateBillResult]:
+    """Writes to Odoo, and this is the write that moves money.
+
+    The mapping in the payload is the one a reviewer approved, not one resolved
+    on the server; the quantities are re-checked against Odoo's own
+    `qty_invoiced` first, so a bill raised since the preview cannot be
+    double-spent. The bill is created in draft.
+
+    A 200 does not mean a bill was created — `status` may report that one
+    already exists, or already exists and has been paid.
+    """
+    return await controller.create_bill(
+        invoice_id=invoice_id, user=user, payload=payload
+    )
 
 
 @router.post(

@@ -407,6 +407,66 @@ async def generate_presigned_url(key: str, expires: int = 3600) -> str:
     return url
 
 
+async def download_file(key: str) -> bytes:
+    """Read a whole object into memory.
+
+    The counterpart to :func:`generate_presigned_url`, for the one case a signed
+    URL cannot serve: handing the bytes to a third party that will not fetch a
+    URL. Odoo's `ir.attachment` takes base64 content, not a link — and a link
+    would be the wrong answer anyway, because the attachment has to outlive the
+    signature by years.
+
+    The size is established with a HeadObject *before* the body is fetched. A
+    `get_object` on an oversized key would buffer all of it into a worker's
+    memory before anything here could object, and on a serverless worker with a
+    fixed ceiling that is an OOM rather than an error message.
+
+    The caller holds the whole result in memory, so this is deliberately not the
+    function to reach for once the upload limit moves past ~50 MB — stream to a
+    SpooledTemporaryFile then, exactly as the upload path already notes.
+    """
+
+    def _size() -> int:
+        response = get_r2_client().head_object(
+            Bucket=settings.R2_BUCKET_NAME, Key=key
+        )
+        return int(response["ContentLength"])
+
+    def _body() -> bytes:
+        response = get_r2_client().get_object(
+            Bucket=settings.R2_BUCKET_NAME, Key=key
+        )
+        return bytes(response["Body"].read())
+
+    try:
+        size = await anyio.to_thread.run_sync(_size)
+    except ClientError as exc:
+        # A key with no object behind it. Distinct from a transport failure:
+        # retrying will never produce the file, so the caller should not.
+        logger.info("Download refused: no object at key=%s", key)
+        raise StorageError("That file is no longer in storage.") from exc
+    except BotoCoreError as exc:
+        logger.exception("HeadObject failed for key=%s", key)
+        raise StorageError() from exc
+
+    if size > settings.upload_max_size_bytes:
+        raise FileTooLargeError(
+            f"That file is {size / 1_048_576:.1f} MB, past the "
+            f"{settings.UPLOAD_MAX_SIZE_MB} MB limit."
+        )
+
+    try:
+        body = await anyio.to_thread.run_sync(_body)
+    except (ClientError, BotoCoreError) as exc:
+        # The key is logged; the botocore message is not echoed — it can carry
+        # the endpoint and the bucket, which are not the caller's business.
+        logger.exception("R2 download failed for key=%s", key)
+        raise StorageError() from exc
+
+    logger.info("Read %s (%d bytes)", key, len(body))
+    return body
+
+
 async def generate_upload_url(
     key: str, *, mime_type: str, original_name: str, expires: int | None = None
 ) -> str:

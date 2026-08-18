@@ -236,3 +236,23 @@ class MatchHistory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         order_by="InvoiceLineMatch.line_no",
         lazy="raise",
     )
+
+    @property
+    def odoo_bill_ref(self) -> str | None:
+        """The label for the vendor bill this invoice became, out of `extra`.
+
+        `odoo_bill_id` is the durable identifier and has its own column; this is
+        the string a person actually reads. A property rather than a column
+        because it is derived display data — the audit record in
+        `extra["odoo_bill"]` is the source, and copying it into a column would
+        be two places to keep in step.
+
+        Note this is the vendor's own invoice number, not an Odoo sequence: the
+        bills this system creates are left in draft, and Odoo does not number a
+        bill until it is posted.
+        """
+        bill = (self.extra or {}).get("odoo_bill")
+        if not isinstance(bill, dict):
+            return None
+        label = bill.get("display_name") or bill.get("vendor_ref")
+        return str(label) if label else None

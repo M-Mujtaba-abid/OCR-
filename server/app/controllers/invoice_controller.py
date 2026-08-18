@@ -13,7 +13,11 @@ from app.models.match_history import InvoiceStatus
 from app.models.user import User
 from app.core.config import settings
 from app.schemas.invoice import (
+    BillOutcome,
+    BillPreview,
     ConfirmMatchRequest,
+    CreateBillRequest,
+    CreateBillResult,
     CreatePoRequest,
     FileLink,
     InvoiceDetail,
@@ -33,6 +37,11 @@ from app.services.match_service import (
     confirm_match,
     reject_invoice,
     run_matching_for_invoice,
+)
+from app.services.bill_creator_service import (
+    bill_url,
+    build_bill_preview,
+    create_bill_for_invoice,
 )
 from app.services.ocr_service import run_ocr_for_invoice
 from app.services.po_creator_service import build_preview, create_po_for_invoice
@@ -310,6 +319,56 @@ class InvoiceController:
         return ApiResponse.ok(
             InvoiceDetail.model_validate(updated),
             message=f"Created {updated.matched_po_name} in Odoo as a draft",
+        )
+
+    async def bill_preview(
+        self, *, invoice_id: uuid.UUID, user: User
+    ) -> ApiResponse[BillPreview]:
+        """What billing this invoice against its matched order would produce."""
+        invoice = await self.service.get_for_user(
+            invoice_id=invoice_id, user=user, can_read_all=True
+        )
+        return ApiResponse.ok(
+            BillPreview.model_validate(await build_bill_preview(invoice))
+        )
+
+    async def create_bill(
+        self, *, invoice_id: uuid.UUID, user: User, payload: CreateBillRequest
+    ) -> ApiResponse[CreateBillResult]:
+        invoice = await self.service.get_for_user(
+            invoice_id=invoice_id, user=user, can_read_all=True, with_lines=True
+        )
+        updated, outcome = await create_bill_for_invoice(
+            self.service.db,
+            invoice=invoice,
+            po_id=payload.po_id,
+            ref=payload.ref,
+            invoice_date=payload.invoice_date,
+            lines=[line.model_dump() for line in payload.lines],
+            receive_goods=payload.receive_goods,
+            attach_document=payload.attach_document,
+            reviewer_id=user.id,
+        )
+        # Three outcomes, three messages. A blanket "Bill created" on a request
+        # that created nothing is the kind of confirmation that gets a vendor
+        # paid twice by somebody who trusted it.
+        message = {
+            BillOutcome.BILL_CREATED: f"Created {outcome['bill_ref']} in Odoo as a draft",
+            BillOutcome.BILL_EXISTS: f"{outcome['bill_ref']} already exists in Odoo",
+            BillOutcome.ALREADY_PAID: (
+                f"{outcome['bill_ref']} already exists in Odoo and is paid"
+            ),
+        }[outcome["status"]]
+
+        return ApiResponse.ok(
+            CreateBillResult.model_validate(
+                {
+                    **outcome,
+                    "bill_url": bill_url(outcome.get("bill_id")),
+                    "invoice": InvoiceDetail.model_validate(updated),
+                }
+            ),
+            message=message,
         )
 
     async def reject(

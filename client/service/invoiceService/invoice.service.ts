@@ -1,8 +1,12 @@
 import axios, { type AxiosProgressEvent } from "axios";
 
+import { DIRECT_UPLOAD } from "@/lib/env";
 import api, { UPLOAD_TIMEOUT } from "@/service/api";
 import type { ApiResponse, Paginated } from "@/types/api.type";
 import type {
+  BillPreview,
+  CreateBillInput,
+  CreateBillResult,
   CreatePoInput,
   FileLink,
   Invoice,
@@ -50,6 +54,33 @@ export const invoiceService = {
     memberNotes,
     onProgress,
   }: UploadInput): Promise<UploadResult> => {
+    // The bucket has no CORS policy, so the browser will not make the direct
+    // PUT. Post the bytes through the API instead — the older path, still
+    // fully wired, and capped by whatever body size the API can accept.
+    if (!DIRECT_UPLOAD) {
+      const form = new FormData();
+      for (const file of files) form.append("files", file);
+      if (memberRefNo?.trim()) form.append("member_ref_no", memberRefNo.trim());
+      if (memberNotes?.trim()) form.append("member_notes", memberNotes.trim());
+
+      const response = await api.post<ApiResponse<UploadResult>>(
+        "/invoices/upload",
+        form,
+        {
+          // Content-Type is left unset deliberately: the browser must set it
+          // itself so it can append the multipart boundary. Setting it by hand
+          // breaks parsing on the server.
+          timeout: UPLOAD_TIMEOUT,
+          onUploadProgress: (event: AxiosProgressEvent) => {
+            if (!event.total) return;
+            onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+          },
+        },
+      );
+      onProgress?.(100);
+      return response.data.data;
+    }
+
     // Three steps, because the bytes must not come through the API: a
     // serverless request body is capped at 4.5 MB and a scanned invoice is
     // routinely larger. The file goes browser -> storage directly; the API
@@ -250,6 +281,41 @@ export const invoiceService = {
   ): Promise<InvoiceDetail> => {
     const response = await api.post<ApiResponse<InvoiceDetail>>(
       `/invoices/${invoiceId}/create-po`,
+      input,
+    );
+    return response.data.data;
+  },
+
+  /**
+   * What billing this invoice against its matched order would produce.
+   *
+   * Read-only. Proposes a line mapping and reports what is left to bill on each
+   * order line — a figure read from Odoo, because one order is billed across
+   * several invoices over weeks and nothing here remembers the earlier ones.
+   */
+  billPreview: async (invoiceId: string): Promise<BillPreview> => {
+    const response = await api.get<ApiResponse<BillPreview>>(
+      `/invoices/${invoiceId}/bill-preview`,
+    );
+    return response.data.data;
+  },
+
+  /**
+   * Create the draft vendor bill in Odoo.
+   *
+   * The payload carries the mapping the reviewer approved — order line ids and
+   * quantities, never products or prices, because Odoo derives those from the
+   * order and an OCR'd price must not overwrite an agreed one.
+   *
+   * A 200 does not mean a bill was created: `status` may report that one
+   * already exists, or already exists and has been paid. Branch on it.
+   */
+  createBill: async (
+    invoiceId: string,
+    input: CreateBillInput,
+  ): Promise<CreateBillResult> => {
+    const response = await api.post<ApiResponse<CreateBillResult>>(
+      `/invoices/${invoiceId}/create-bill`,
       input,
     );
     return response.data.data;

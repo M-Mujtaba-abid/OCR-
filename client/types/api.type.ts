@@ -64,6 +64,19 @@ export type ApiErrorCode =
   | "NO_VALID_FILES"
   | "INVOICE_NOT_FOUND"
   | "INVOICE_LOCKED"
+  | "INVOICE_NOT_READY"
+  /* Odoo. ODOO_REFUSED is the one worth branching on: Odoo understood the
+     request and declined, and its own message says what to do about it — so it
+     is shown verbatim rather than replaced with wording of ours. The other two
+     mean Odoo is unreachable or misconfigured, which no user action fixes. */
+  | "ODOO_REFUSED"
+  | "ODOO_ERROR"
+  | "ODOO_AUTH_ERROR"
+  | "ODOO_NOT_CONFIGURED"
+  /* Billing refusals, all 409 and all raised before anything is written. */
+  | "PO_LINE_OVER_BILLED"
+  | "RECEIPT_NOT_POSSIBLE"
+  | "NOTHING_TO_BILL"
   | "STORAGE_ERROR"
   | "STORAGE_NOT_CONFIGURED"
   | "DATABASE_ERROR"

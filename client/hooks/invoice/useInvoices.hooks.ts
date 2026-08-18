@@ -16,6 +16,7 @@ import { invoiceService } from "@/service/invoiceService/invoice.service";
 import type { Paginated } from "@/types/api.type";
 import {
   TRANSIENT_STATUSES,
+  type CreateBillInput,
   type CreatePoInput,
   type Invoice,
   type InvoiceListParams,
@@ -271,6 +272,88 @@ export function useCreatePo() {
   });
 }
 
+/* -------------------------------------------------------------------------
+ * Vendor bills
+ *
+ * One order is billed across several invoices over time, so "how much is left"
+ * is never cached across a mutation — it is Odoo's number, and it moves every
+ * time anybody bills anything against that order.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * What billing this invoice against its order would produce.
+ *
+ * Gated like `usePoPreview` and for the same reason: it costs an order read
+ * plus a search for existing bills, and a reviewer who never opens the panel
+ * should pay for neither. Held long, because closing the panel and coming back
+ * is a normal thing to do mid-review.
+ */
+export function useBillPreview(invoiceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.invoices.billPreview(invoiceId),
+    queryFn: () => invoiceService.billPreview(invoiceId),
+    enabled: enabled && Boolean(invoiceId),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+  });
+}
+
+export function useCreateBill() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      invoiceId,
+      input,
+    }: {
+      invoiceId: string;
+      input: CreateBillInput;
+    }) => invoiceService.createBill(invoiceId, input),
+    onSuccess: (result) => {
+      // Three outcomes, three sentences. "Done" would be a lie for two of them,
+      // and a confirmation somebody trusts is how a vendor gets paid twice.
+      if (result.status === "already_paid") {
+        toast(`${result.bill_ref} already exists in Odoo and is paid.`, {
+          icon: "⚠️",
+          duration: 8_000,
+        });
+      } else if (result.status === "bill_exists") {
+        toast(`A bill for this reference already exists: ${result.bill_ref}.`, {
+          icon: "⚠️",
+          duration: 8_000,
+        });
+      } else {
+        toast.success(`Created ${result.bill_ref} in Odoo as a draft`);
+        if (result.attachment_status !== "attached") {
+          // Said out loud. A silently missing document is discovered weeks
+          // later by an auditor, which is the worst possible moment.
+          toast("The bill was created, but the scan was not attached to it.", {
+            icon: "⚠️",
+            duration: 8_000,
+          });
+        }
+      }
+
+      // The response carries the new detail; writing it beats refetching data
+      // that arrived a millisecond ago.
+      queryClient.setQueryData(
+        queryKeys.invoices.detail(result.invoice.id),
+        result.invoice,
+      );
+      // Every remaining-to-bill figure on that order has just moved.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.invoices.billPreview(result.invoice.id),
+      });
+      invalidateInvoiceLists(queryClient);
+    },
+    onError: (error: ApiError) => {
+      // 409 carries the readable reason — over-billing, an unconfirmed match, a
+      // receipt that cannot be recorded. 502/503 mean Odoo, not the reviewer.
+      toast.error(error.message || "Could not create the vendor bill");
+    },
+  });
+}
+
 export function useRejectInvoice() {
   const queryClient = useQueryClient();
 
@@ -369,6 +452,7 @@ export function useDeleteInvoice() {
       // deleted invoice as though it were still there.
       queryClient.removeQueries({ queryKey: queryKeys.invoices.detail(invoice.id) });
       queryClient.removeQueries({ queryKey: queryKeys.invoices.poPreview(invoice.id) });
+      queryClient.removeQueries({ queryKey: queryKeys.invoices.billPreview(invoice.id) });
       invalidateInvoiceLists(queryClient);
     },
     onError: (error: ApiError) => {

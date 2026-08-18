@@ -40,7 +40,15 @@ export function MatchCandidates({
   disabled: boolean;
 }) {
   const candidates = invoice.candidates;
-  const decided = invoice.status === "confirmed" || invoice.status === "corrected";
+  // "pushed" belongs here as much as the other two: a billed invoice is
+  // decided. Leaving it out renders live "Use this one instead" buttons on a
+  // vendor bill, and clicking one would move the row back to `confirmed` while
+  // `odoo_bill_id` stayed set — an invoice that has been billed and no longer
+  // says so.
+  const decided =
+    invoice.status === "confirmed" ||
+    invoice.status === "corrected" ||
+    invoice.status === "pushed";
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">

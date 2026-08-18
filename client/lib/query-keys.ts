@@ -40,6 +40,15 @@ export const queryKeys = {
     /** The Odoo resolution for a would-be purchase order. */
     poPreview: (id: string) =>
       [...queryKeys.invoices.all, "po-preview", id] as const,
+    /**
+     * What billing this invoice against its order would produce.
+     *
+     * Under `all` rather than `lists`, for the same reason `poPreview` is: it
+     * costs an order read plus a search for existing bills, and a mutation on
+     * an unrelated invoice has no business discarding it.
+     */
+    billPreview: (id: string) =>
+      [...queryKeys.invoices.all, "bill-preview", id] as const,
     myStats: [...(["invoices"] as const), "stats", "mine"] as const,
     adminStats: [...(["invoices"] as const), "stats", "admin"] as const,
     trend: (days: number) =>

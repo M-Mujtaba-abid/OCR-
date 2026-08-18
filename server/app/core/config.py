@@ -204,6 +204,18 @@ class Settings(BaseSettings):
     # 0 disables the check.
     ODOO_PO_DUPLICATE_WINDOW_MINUTES: int = Field(default=10, ge=0, le=1440)
 
+    # The largest scan to push into Odoo as an ir.attachment on a vendor bill.
+    #
+    # Not the same ceiling as the upload limit, and lower for a real reason:
+    # base64 inflates the payload by 4/3 and xmlrpc builds the whole request as
+    # one string in memory, so a 10 MB scan is a ~14 MB XML body. The thing that
+    # rejects it is usually not Odoo but the reverse proxy in front of it —
+    # nginx's client_max_body_size defaults to 1 MB — and that rejection arrives
+    # as an HTTP 413, which xmlrpc raises as ProtocolError rather than Fault. It
+    # would reach the client as a contentless 502. Capping here instead lets the
+    # bill be created and the attachment honestly reported as skipped.
+    ODOO_ATTACHMENT_MAX_MB: int = Field(default=10, ge=1, le=50)
+
     # A JSON file of purchase orders to use INSTEAD of a live Odoo.
     #
     # Only honoured when ODOO_URL is empty, so it can never shadow a real

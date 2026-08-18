@@ -34,7 +34,11 @@ export function CreatePurchaseOrder({ invoice }: { invoice: InvoiceDetail }) {
     created ||
     invoice.status === "confirmed" ||
     invoice.status === "corrected" ||
-    invoice.status === "rejected";
+    invoice.status === "rejected" ||
+    // A billed invoice is finished. Without this the panel offers to raise a
+    // new purchase order underneath an invoice that has already become a
+    // vendor bill against an existing one.
+    invoice.status === "pushed";
 
   // Preselections are the starting point, not the answer: a line the resolver
   // was unsure about has none, and stays unset until the reviewer picks.

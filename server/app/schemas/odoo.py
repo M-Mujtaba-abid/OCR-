@@ -9,7 +9,7 @@ boundary.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -17,6 +17,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 #: audit blob alike. Capped because a 200-line order would otherwise dominate
 #: the prompt and crowd out the other candidates entirely.
 LINE_PROJECTION_CAP = 25
+
+#: `payment_state` values that mean the money has left. Split out from "a bill
+#: exists" because the two need different answers: an unpaid duplicate can
+#: still be corrected in Odoo, a paid one is a recovery conversation.
+PAID_PAYMENT_STATES = frozenset({"paid", "in_payment"})
 
 
 def _odoo_value(value: Any) -> Any:
@@ -61,6 +66,84 @@ class OdooCreatedOrder(BaseModel):
     name: str
 
 
+class BillAttachment(NamedTuple):
+    """The uploaded invoice, already fetched from storage by the caller.
+
+    Bytes rather than an object key, deliberately: `odoo_service` stays free of
+    any knowledge of R2, which is the same separation `core/storage.py`
+    documents from the other side.
+    """
+
+    file_name: str
+    mime_type: str
+    content: bytes
+
+
+class OdooExistingBill(BaseModel):
+    """A vendor bill Odoo already holds for a reference."""
+
+    id: int
+    #: "/" while the bill is a draft — Odoo numbers it from the journal
+    #: sequence at post time, not at creation.
+    name: str = "/"
+    ref: str | None = None
+    #: draft | posted | cancel
+    state: str | None = None
+    #: not_paid | in_payment | paid | partial | reversed. Absent on Odoo 13,
+    #: where the field was still called `invoice_payment_state`.
+    payment_state: str | None = None
+    amount_total: float = 0.0
+    invoice_origin: str | None = None
+
+    @property
+    def is_settled(self) -> bool:
+        """Whether the money has left. Not the same as "a bill exists"."""
+        return self.payment_state in PAID_PAYMENT_STATES
+
+    @classmethod
+    def from_odoo(cls, row: dict[str, Any]) -> "OdooExistingBill":
+        return cls(
+            id=int(row["id"]),
+            name=str(_odoo_value(row.get("name")) or "/"),
+            ref=_odoo_value(row.get("ref")) or None,
+            state=_odoo_value(row.get("state")) or None,
+            payment_state=_odoo_value(row.get("payment_state")) or None,
+            amount_total=float(_odoo_value(row.get("amount_total")) or 0.0),
+            invoice_origin=_odoo_value(row.get("invoice_origin")) or None,
+        )
+
+
+class OdooReceiptResult(BaseModel):
+    """What validating a partial receipt actually did."""
+
+    picking_id: int
+    picking_name: str
+    #: The remainder Odoo kept for a later delivery. Empty when the receipt was
+    #: complete — which, for a partially-billed order, it usually is not.
+    backorder_ids: list[int] = Field(default_factory=list)
+    backorder_names: list[str] = Field(default_factory=list)
+    #: purchase.order.line id -> quantity received, as Odoo confirmed it.
+    received: dict[int, float] = Field(default_factory=dict)
+
+
+class OdooCreatedBill(BaseModel):
+    """A vendor bill this system created, read back from Odoo."""
+
+    id: int
+    #: "/" for a draft. Use `display_name` for anything a person reads.
+    name: str = "/"
+    ref: str | None = None
+    display_name: str = ""
+    state: str = "draft"
+    amount_untaxed: float = 0.0
+    amount_total: float = 0.0
+    currency: str | None = None
+    #: attached | skipped | failed | none. Never a reason to fail the request —
+    #: by the time it is decided the bill exists and cannot be un-created.
+    attachment_status: str = "none"
+    attachment_id: int | None = None
+
+
 class OdooPurchaseOrderLine(BaseModel):
     """One `purchase.order.line`."""
 
@@ -72,7 +155,22 @@ class OdooPurchaseOrderLine(BaseModel):
     product_id: int | None = None
     product_name: str | None = None
     product_qty: float = 0.0
+    #: What Odoo says has physically arrived. Billing beyond it is legitimate —
+    #: a prepayment, a service, a part-shipment invoiced in full — so this
+    #: informs a reviewer rather than constraining them.
+    qty_received: float = 0.0
+    #: The sum of every bill already raised against this line, DRAFT BILLS
+    #: INCLUDED (`_compute_qty_invoiced` filters only on `state != 'cancel'`).
+    #: That inclusion is what makes the over-billing guard idempotent across a
+    #: retry that created a bill and then failed on the way back.
     qty_invoiced: float = 0.0
+    #: Odoo's own answer to "how much would I bill right now", which already
+    #: honours the product's bill-control policy. Not the same as
+    #: `product_qty - qty_invoiced` — see `remaining_to_bill`.
+    qty_to_invoice: float = 0.0
+    #: `line_section` / `line_note` mark a heading or a comment, not goods.
+    #: Empty for a real line.
+    display_type: str | None = None
     price_unit: float = 0.0
     price_subtotal: float = 0.0
     #: Tax charged on this line, and the line total including it. Odoo computes
@@ -105,7 +203,10 @@ class OdooPurchaseOrderLine(BaseModel):
             product_id=_relation_id(row.get("product_id")),
             product_name=_relation_name(row.get("product_id")),
             product_qty=float(_odoo_value(row.get("product_qty")) or 0.0),
+            qty_received=float(_odoo_value(row.get("qty_received")) or 0.0),
             qty_invoiced=float(_odoo_value(row.get("qty_invoiced")) or 0.0),
+            qty_to_invoice=float(_odoo_value(row.get("qty_to_invoice")) or 0.0),
+            display_type=_odoo_value(row.get("display_type")) or None,
             price_unit=float(_odoo_value(row.get("price_unit")) or 0.0),
             price_subtotal=float(_odoo_value(row.get("price_subtotal")) or 0.0),
             price_tax=float(_odoo_value(row.get("price_tax")) or 0.0),

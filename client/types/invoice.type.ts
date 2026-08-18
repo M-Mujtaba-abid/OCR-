@@ -158,6 +158,10 @@ export interface InvoiceDetail extends Invoice {
   pushed_to_odoo: boolean;
   pushed_at: string | null;
   odoo_bill_id: number | null;
+  /** What to call the bill on screen. For a draft this is the vendor's own
+   *  invoice number, not an Odoo sequence — Odoo does not number a bill until
+   *  it is posted, and these are deliberately left in draft. */
+  odoo_bill_ref: string | null;
   reviewed_at: string | null;
   rejection_reason: string | null;
 }
@@ -209,6 +213,126 @@ export interface CreatePoInput {
   partner_id: number;
   order_date: string | null;
   lines: CreatePoLine[];
+}
+
+/* -------------------------------------------------------------------------
+ * Creating a vendor bill from a matched purchase order
+ *
+ * One order is billed across several invoices over time — 100 pieces ordered,
+ * 50 delivered and billed now, 50 next month. Everything here follows from
+ * that: quantities are per line, and "remaining" comes from Odoo on every
+ * request rather than being remembered between them.
+ * ---------------------------------------------------------------------- */
+
+/** What actually happened in Odoo. A 200 does not mean a bill was created. */
+export type BillOutcome = "bill_created" | "bill_exists" | "already_paid";
+
+/** Whether the scanned document made it onto the bill. Never fails a request. */
+export type AttachmentStatus = "attached" | "skipped" | "failed";
+
+export interface BillPreviewLine {
+  po_line_id: number;
+  product_id: number | null;
+  product_name: string | null;
+  description: string;
+  uom: string | null;
+
+  ordered_qty: number;
+  /** What has physically arrived. Billing beyond it is legitimate, so this
+   *  informs the reviewer rather than constraining them. */
+  received_qty: number;
+  /** Odoo's `qty_invoiced` — every earlier bill against this line, summed.
+   *  Odoo's number, read fresh; nothing here remembers it between invoices. */
+  billed_qty: number;
+  /** ordered - billed. The ceiling the create endpoint enforces. */
+  remaining_qty: number;
+
+  /** The invoice's quantity, capped at `remaining`. Zero where nothing on the
+   *  invoice matched — the row is still shown so a quantity can be typed in. */
+  proposed_qty: number;
+  /** The ORDER's price. A disagreement with the invoice is surfaced, never
+   *  silently applied. */
+  unit_price: number;
+
+  invoice_line_no: number | null;
+  invoice_description: string | null;
+  invoice_quantity: number | null;
+  invoice_unit_price: number | null;
+  /** 0-100. Null means nothing on the invoice mapped to this order line. */
+  match_score: number | null;
+}
+
+/** An invoice line with no counterpart on the order. Shown, never dropped. */
+export interface BillPreviewUnmatchedLine {
+  line_no: number;
+  description: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+}
+
+export interface BillDuplicate {
+  bill_id: number;
+  bill_ref: string;
+  state: string | null;
+  payment_state: string | null;
+  amount_total: number;
+  outcome: BillOutcome;
+}
+
+export interface BillPreview {
+  po_id: number;
+  po_name: string;
+  partner_id: number | null;
+  partner_name: string | null;
+  /** A draft RFQ cannot be billed, and this is what says so before the click. */
+  po_state: string | null;
+  currency: string | null;
+
+  /** What the bill's `ref` will be — and the key the duplicate check searches. */
+  invoice_ref: string | null;
+  invoice_date: string;
+
+  /** Non-null means Odoo already holds a bill for this reference. */
+  duplicate: BillDuplicate | null;
+  already_pushed: boolean;
+
+  lines: BillPreviewLine[];
+  unmatched: BillPreviewUnmatchedLine[];
+
+  proposed_untaxed: number;
+  invoice_untaxed: number | null;
+  odoo_url: string;
+}
+
+/** Ids and quantities only. Odoo derives product, price and tax from the
+ *  order line, and an OCR'd price must not overwrite an agreed one. */
+export interface CreateBillLine {
+  po_line_id: number;
+  quantity: number;
+}
+
+export interface CreateBillInput {
+  po_id: number;
+  ref: string | null;
+  invoice_date: string | null;
+  lines: CreateBillLine[];
+  receive_goods: boolean;
+  attach_document: boolean;
+}
+
+export interface CreateBillResult {
+  status: BillOutcome;
+  bill_id: number | null;
+  bill_ref: string | null;
+  attachment_status: AttachmentStatus;
+  /** ISO date, `YYYY-MM-DD`. */
+  invoice_date: string;
+  bill_url: string;
+  receipt_name: string | null;
+  backorder_names: string[];
+  /** The refreshed invoice — write it into the detail cache, do not refetch. */
+  invoice: InvoiceDetail;
 }
 
 /** A file the server refused. Reported per-file so a partial upload is legible. */

@@ -33,6 +33,22 @@ export const BACKEND_URL =
 export const API_PREFIX = process.env.NEXT_PUBLIC_API_PREFIX ?? "/api/v1";
 
 /**
+ * Send invoice bytes straight from the browser to object storage.
+ *
+ * On by default, and it should stay on wherever this is deployed: a serverless
+ * request body is capped at 4.5 MB and a scanned invoice routinely exceeds it,
+ * so routing bytes through the API is not a smaller version of the same thing —
+ * it is a hard ceiling that rejects the normal case.
+ *
+ * Turning it off posts a multipart form to the API instead, which is the older
+ * path and still fully wired. It exists for one situation: the storage bucket
+ * has no CORS policy yet, so the browser refuses the direct PUT before sending
+ * a byte. That is a bucket setting, not a code problem — see
+ * `server/scripts/set_r2_cors.py`. This flag buys time; it does not fix it.
+ */
+export const DIRECT_UPLOAD = process.env.NEXT_PUBLIC_DIRECT_UPLOAD !== "false";
+
+/**
  * How often a list refetches while something is mid-pipeline. Only ever while
  * work is in flight — see `pollWhileWorking`.
  */

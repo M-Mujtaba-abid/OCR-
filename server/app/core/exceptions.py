@@ -245,6 +245,75 @@ class OdooError(AppError):
     message = "Odoo is temporarily unavailable. Please try again."
 
 
+class OdooRefusedError(AppError):
+    """409. Odoo understood the request and said no.
+
+    A different thing entirely from `OdooError`, and the distinction is not
+    cosmetic. Odoo answers a `UserError` with XML-RPC fault code 2 and a bare
+    message — no traceback — because that message was written to be shown to a
+    person: "complete the quality inspection first", "the period is locked",
+    "this order is already fully invoiced".
+
+    Reporting those as 502 "temporarily unavailable, please try again" is worse
+    than unhelpful. It is false in both halves: Odoo is up, and retrying will
+    never work, because nothing about waiting changes an unfinished quality
+    check. So this is a 409 and it carries Odoo's own wording.
+
+    Echoing that wording is safe precisely because fault code 2 is the case
+    where Odoo has already decided the text is fit for a user. Fault code 1 —
+    an actual traceback, with the database name and internal paths in it —
+    stays behind `OdooError` and is only ever logged.
+    """
+
+    status_code, code = 409, "ODOO_REFUSED"
+    message = "Odoo refused this operation."
+
+
+# --------------------------------------------------------------------------
+# Billing
+#
+# All 409s, and all raised BEFORE the one irreversible call in the billing
+# flow (`stock.picking.button_validate`). That ordering is the point: a refusal
+# after the goods are marked received leaves a warehouse claim this system
+# cannot retract, so every one of these has to be reachable while nothing has
+# been written yet.
+# --------------------------------------------------------------------------
+class OverBilledError(AppError):
+    """409. The invoice asks for more than the order has left to bill.
+
+    `details` carries the offending lines with their remaining quantities:
+    "over-billed" without saying by how much on which line leaves the reviewer
+    to work it out against Odoo, which is what this product exists to avoid.
+    """
+
+    status_code, code = 409, "PO_LINE_OVER_BILLED"
+    message = "This invoice bills more than the purchase order has left."
+
+
+class ReceiptNotPossibleError(AppError):
+    """409. The receipt cannot be recorded automatically — and nothing was.
+
+    Raised for a lot/serial-tracked product, an ambiguous set of open
+    receipts, or quantities Odoo did not accept as written. In every case the
+    guarantee in the message is literal: no stock has moved.
+    """
+
+    status_code, code = 409, "RECEIPT_NOT_POSSIBLE"
+    message = "The goods receipt could not be recorded automatically."
+
+
+class NothingToBillError(AppError):
+    """409. Odoo has nothing left to invoice on this order.
+
+    `action_create_invoice` skips an order whose `invoice_status` is not
+    "to invoice" and answers with a window-close action — no fault, no bill.
+    Without this the caller would see a successful call that created nothing.
+    """
+
+    status_code, code = 409, "NOTHING_TO_BILL"
+    message = "Odoo has nothing left to bill on this purchase order."
+
+
 # --------------------------------------------------------------------------
 # Matching
 # --------------------------------------------------------------------------

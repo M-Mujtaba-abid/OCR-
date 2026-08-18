@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 
 import { CreatePurchaseOrder } from "@/components/invoices/CreatePurchaseOrder";
+import { CreateVendorBill } from "@/components/invoices/CreateVendorBill";
 import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
 import { MatchCandidates } from "@/components/invoices/MatchCandidates";
 import { Alert } from "@/components/ui/Alert";
@@ -316,6 +317,11 @@ export default function InvoiceReviewPage() {
         confirming={confirm.isPending}
         disabled={busy}
       />
+
+      {/* ----------------------------------------------------- create a bill */}
+      {/* After the match it depends on, before the fallback for when there
+          was no match to begin with. */}
+      <CreateVendorBill invoice={invoice} />
 
       {/* ------------------------------------------------------- create a PO */}
       <CreatePurchaseOrder invoice={invoice} />
