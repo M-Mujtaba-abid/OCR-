@@ -31,7 +31,10 @@ export function StatCard({
       <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
         {label}
       </p>
-      <p className={`mt-2 text-2xl font-semibold tabular-nums ${TONES[tone]}`}>
+      {/* Proportional figures, not tabular: equal-width digits are for numbers
+          that line up in a column, and at this size they make a value like 121
+          read loose and machine-set. */}
+      <p className={`mt-2 text-2xl font-semibold ${TONES[tone]}`}>
         {value === undefined ? "—" : value}
       </p>
       {hint && (

@@ -42,6 +42,7 @@ from app.schemas.invoice import (
     InvoiceDetail,
     InvoiceListItem,
     InvoiceStats,
+    InvoiceTrend,
     JobAccepted,
     PoPreview,
     RejectInvoiceRequest,
@@ -168,6 +169,22 @@ async def admin_stats(
 ) -> ApiResponse[InvoiceStats]:
     # Declared before /{invoice_id} so "admin" is never parsed as a UUID.
     return await controller.stats(user=None)
+
+
+@router.get(
+    "/admin/trend",
+    response_model=ApiResponse[InvoiceTrend],
+    summary="Daily arrivals and reviews (requires invoice.read.all)",
+    responses=ERROR_RESPONSES,
+)
+async def admin_trend(
+    controller: Controller,
+    _actor: CanReadAll,
+    days: Annotated[int, Query(ge=7, le=90)] = 14,
+) -> ApiResponse[InvoiceTrend]:
+    # Declared before /{invoice_id}, like /admin/stats, so "admin" is never
+    # parsed as a UUID.
+    return await controller.trend(days=days)
 
 
 @router.get(

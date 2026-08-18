@@ -103,6 +103,22 @@ export function useAdminInvoiceStats() {
   });
 }
 
+/**
+ * Daily arrivals and reviews for the dashboard.
+ *
+ * A day-grained aggregate cannot change meaningfully between two glances at
+ * the page, so this is the one invoice query with a generous staleTime — and
+ * it is not in the `lists` prefix, so a status change does not re-run the
+ * aggregation.
+ */
+export function useInvoiceTrend(days = 14) {
+  return useQuery({
+    queryKey: queryKeys.invoices.trend(days),
+    queryFn: () => invoiceService.adminTrend(days),
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function useInvoice(invoiceId: string | null) {
   return useQuery({
     queryKey: queryKeys.invoices.detail(invoiceId ?? ""),

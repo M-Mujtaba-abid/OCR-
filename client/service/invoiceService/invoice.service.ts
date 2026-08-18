@@ -7,6 +7,7 @@ import type {
   InvoiceDetail,
   InvoiceListParams,
   InvoiceStats,
+  InvoiceTrend,
   JobAccepted,
   PoPreview,
   UploadInput,
@@ -162,6 +163,15 @@ export const invoiceService = {
     const response = await api.post<ApiResponse<InvoiceDetail>>(
       `/invoices/${invoiceId}/confirm`,
       { po_id: poId },
+    );
+    return response.data.data;
+  },
+
+  /** Daily arrivals and reviews for the admin dashboard. */
+  adminTrend: async (days = 14): Promise<InvoiceTrend> => {
+    const response = await api.get<ApiResponse<InvoiceTrend>>(
+      "/invoices/admin/trend",
+      { params: { days } },
     );
     return response.data.data;
   },

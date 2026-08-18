@@ -19,6 +19,7 @@ from app.schemas.invoice import (
     InvoiceDetail,
     InvoiceListItem,
     InvoiceStats,
+    InvoiceTrend,
     JobAccepted,
     PoPreview,
     RejectInvoiceRequest,
@@ -241,6 +242,9 @@ class InvoiceController:
                 "Match corrected" if updated.was_corrected else "Match confirmed"
             ),
         )
+
+    async def trend(self, *, days: int) -> ApiResponse[InvoiceTrend]:
+        return ApiResponse.ok(await self.service.trend(days=days))
 
     async def po_preview(
         self, *, invoice_id: uuid.UUID, user: User

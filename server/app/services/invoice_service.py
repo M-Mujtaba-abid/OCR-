@@ -6,6 +6,7 @@ object storage and Postgres. Everything careful in this module is about that.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import Sequence
 
@@ -30,7 +31,12 @@ from app.models.match_history import (
 from app.models.notification import NotificationType
 from app.models.user import User, UserRole
 from app.repositories.match_history_repository import MatchHistoryRepository
-from app.schemas.invoice import InvoiceStats, UploadRejection
+from app.schemas.invoice import (
+    InvoiceStats,
+    InvoiceTrend,
+    InvoiceTrendPoint,
+    UploadRejection,
+)
 from app.services.notification_service import NotificationService
 from app.services.ocr_service import run_ocr_for_invoice
 
@@ -329,6 +335,32 @@ class InvoiceService:
             by_status={status: by_status.get(status, 0) for status in InvoiceStatus},
             open_count=sum(by_status.get(status, 0) for status in OPEN_STATUSES),
         )
+
+    async def trend(
+        self, *, days: int = 14, tenant_id: str = "default"
+    ) -> InvoiceTrend:
+        """Arrivals and reviews per day, zero-filled across the whole window."""
+        today = dt.date.today()
+        since = today - dt.timedelta(days=days - 1)
+
+        counted = {
+            day: (received, reviewed)
+            for day, received, reviewed in await self.invoices.daily_counts(
+                since=since, tenant_id=tenant_id
+            )
+        }
+
+        # Every day in the window gets a point, whether anything happened or
+        # not. Skipping quiet days would draw a week of one invoice and a week
+        # of forty at the same width.
+        points = []
+        for offset in range(days):
+            day = since + dt.timedelta(days=offset)
+            received, reviewed = counted.get(day, (0, 0))
+            points.append(
+                InvoiceTrendPoint(day=day, received=received, reviewed=reviewed)
+            )
+        return InvoiceTrend(days=days, points=points)
 
     # ------------------------------------------------------------------ delete
     async def delete(self, *, invoice_id: uuid.UUID, actor: User) -> None:

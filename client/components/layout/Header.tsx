@@ -4,10 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAuth, useLogout } from "@/hooks/auth/useAuth.hooks";
-import { useUnreadCount } from "@/hooks/notification/useNotifications.hooks";
 import { ROLE_LABEL, homePathFor, navLinksFor } from "@/lib/auth/roles";
 
 export function Header() {
@@ -16,16 +16,11 @@ export function Header() {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Polls only while signed in — an anonymous poll would 401 every 30 seconds
-  // and drag the interceptor through a pointless refresh each time.
-  const { data: unread } = useUnreadCount(isAuthenticated);
-
   // Navigation is rendered only for authenticated users — showing links that
   // immediately bounce to /login is worse than not showing them.
   if (!isAuthenticated || !user) return null;
 
   const displayName = user.full_name?.trim() || user.email;
-  const unreadCount = unread?.count ?? 0;
   // Role-filtered, so a member never sees an Admin link they cannot open.
   // Hiding it is courtesy; /admin's layout and the API are what enforce it.
   const navLinks = navLinksFor(user);
@@ -65,15 +60,7 @@ export function Header() {
         </div>
 
         <div className="hidden items-center gap-3 sm:flex">
-          {unreadCount > 0 && (
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-400/20"
-              title={`${unreadCount} unread notification${unreadCount === 1 ? "" : "s"}`}
-            >
-              <span aria-hidden="true">●</span>
-              {unreadCount} new
-            </span>
-          )}
+          <NotificationBell />
 
           <span
             className="max-w-[200px] truncate text-sm text-slate-600 dark:text-slate-400"
@@ -97,18 +84,25 @@ export function Header() {
           </Button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-expanded={menuOpen}
-          aria-controls="mobile-nav"
-          aria-label="Toggle navigation menu"
-          className="rounded-md p-2 text-slate-600 hover:bg-slate-100 sm:hidden dark:text-slate-300 dark:hover:bg-slate-800"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            {menuOpen ? <path d="M18 6 6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
-          </svg>
-        </button>
+        {/* On a phone the bell sits beside the menu toggle rather than inside
+            it: a notification count is the reason to open the menu, so hiding
+            it behind the menu is the wrong way round. */}
+        <div className="flex items-center gap-1 sm:hidden">
+          <NotificationBell />
+
+          <button
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-expanded={menuOpen}
+            aria-controls="mobile-nav"
+            aria-label="Toggle navigation menu"
+            className="rounded-md p-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              {menuOpen ? <path d="M18 6 6 18M6 6l12 12" /> : <path d="M3 12h18M3 6h18M3 18h18" />}
+            </svg>
+          </button>
+        </div>
       </div>
 
       {menuOpen && (

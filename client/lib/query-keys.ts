@@ -39,6 +39,8 @@ export const queryKeys = {
       [...queryKeys.invoices.all, "po-preview", id] as const,
     myStats: [...(["invoices"] as const), "stats", "mine"] as const,
     adminStats: [...(["invoices"] as const), "stats", "admin"] as const,
+    trend: (days: number) =>
+      [...(["invoices"] as const), "trend", days] as const,
   },
 
   users: {

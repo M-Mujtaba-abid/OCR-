@@ -144,6 +144,29 @@ class InvoiceStats(BaseModel):
     open_count: int
 
 
+class InvoiceTrendPoint(BaseModel):
+    """One day on the dashboard's trend chart."""
+
+    day: dt.date
+    #: Invoices that arrived that day.
+    received: int
+    #: Invoices a reviewer settled that day — confirmed, corrected, rejected or
+    #: turned into a purchase order. Counted against `reviewed_at`, so it is
+    #: about the day the WORK happened, not the day the document arrived.
+    reviewed: int
+
+
+class InvoiceTrend(BaseModel):
+    """A continuous run of days, quiet ones included.
+
+    Zero-filled deliberately: a chart that omits empty days draws a busy week
+    and a dead one the same width, which is the opposite of what a trend is for.
+    """
+
+    days: int
+    points: list[InvoiceTrendPoint] = Field(default_factory=list)
+
+
 class FileLink(BaseModel):
     """A short-lived signed URL for one stored object."""
 

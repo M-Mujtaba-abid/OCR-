@@ -223,6 +223,21 @@ export interface UploadResult {
   rejected: UploadRejection[];
 }
 
+/** One day on the dashboard's trend chart. */
+export interface InvoiceTrendPoint {
+  /** ISO date, `YYYY-MM-DD`, grouped in UTC by the server. */
+  day: string;
+  received: number;
+  /** Settled that day — counted against `reviewed_at`, not arrival. */
+  reviewed: number;
+}
+
+export interface InvoiceTrend {
+  days: number;
+  /** Continuous: quiet days are present with zeroes, never skipped. */
+  points: InvoiceTrendPoint[];
+}
+
 export interface InvoiceStats {
   total: number;
   /** Zero-filled by the backend, so every status is always a key. */

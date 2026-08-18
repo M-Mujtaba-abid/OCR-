@@ -12,10 +12,21 @@ import {
 import type { Paginated } from "@/types/api.type";
 import type { AppNotification, UnreadCount } from "@/types/invoice.type";
 
-export function useNotifications(params: ListNotificationsParams = {}) {
+/**
+ * A page of notifications.
+ *
+ * `enabled` because the list lives behind a dropdown: fetching rows nobody has
+ * opened is a request per page load for data that is never rendered. The bell's
+ * unread count is a separate, much smaller query, and that one always runs.
+ */
+export function useNotifications(
+  params: ListNotificationsParams = {},
+  enabled = true,
+) {
   return useQuery({
     queryKey: queryKeys.notifications.list(params),
     queryFn: () => notificationService.list(params),
+    enabled,
   });
 }
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import contains_eager, selectinload
 
@@ -184,3 +185,37 @@ class MatchHistoryRepository:
         if user_id is not None:
             stmt = stmt.where(MatchHistory.uploaded_by == user_id)
         return {status: int(n) for status, n in (await self.db.execute(stmt)).all()}
+
+    async def daily_counts(
+        self, *, since: dt.date, tenant_id: str = "default"
+    ) -> list[tuple[dt.date, int, int]]:
+        """Invoices received and reviewed per day, in ONE statement.
+
+        Two measures over two different timestamps — `created_at` for arrivals,
+        `reviewed_at` for the moment somebody dealt with it — which the obvious
+        implementation reads as two queries. Unioned into one instead: a second
+        round trip costs more than the whole aggregation does, and this runs on
+        every dashboard load.
+
+        Days with no activity are absent here; the service fills them, because a
+        chart with holes in its x-axis lies about the shape of the trend.
+        """
+        stmt = text("""
+            SELECT day::date AS day,
+                   count(*) FILTER (WHERE kind = 'received') AS received,
+                   count(*) FILTER (WHERE kind = 'reviewed') AS reviewed
+            FROM (
+                SELECT created_at AS day, 'received' AS kind
+                  FROM match_history
+                 WHERE tenant_id = :tenant AND created_at >= :since
+                UNION ALL
+                SELECT reviewed_at AS day, 'reviewed' AS kind
+                  FROM match_history
+                 WHERE tenant_id = :tenant AND reviewed_at IS NOT NULL
+                   AND reviewed_at >= :since
+            ) events
+            GROUP BY 1
+            ORDER BY 1
+        """)
+        rows = await self.db.execute(stmt, {"tenant": tenant_id, "since": since})
+        return [(day, int(received), int(reviewed)) for day, received, reviewed in rows]
