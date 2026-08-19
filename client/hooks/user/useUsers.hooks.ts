@@ -28,8 +28,10 @@ import type { User, UserRole } from "@/types/user.type";
  * refetch does mid-interaction.
  */
 function patchCachedUser(queryClient: QueryClient, updated: User): void {
+  // `lists`, not `all`: `all` also matches the stats query, which caches a
+  // bare summary object with no `items` to map over.
   queryClient.setQueriesData<Paginated<User>>(
-    { queryKey: queryKeys.users.all },
+    { queryKey: queryKeys.users.lists },
     (page) =>
       page && {
         ...page,

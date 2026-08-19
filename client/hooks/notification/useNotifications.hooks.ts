@@ -62,8 +62,10 @@ export function useMarkNotificationRead() {
       queryClient.setQueryData<UnreadCount>(queryKeys.notifications.unread, (current) =>
         current && { count: Math.max(0, current.count - 1) },
       );
+      // `lists`, not `all`: `all` also matches the unread-count query, whose
+      // data has no `items` to map over.
       queryClient.setQueriesData<Paginated<AppNotification>>(
-        { queryKey: queryKeys.notifications.all },
+        { queryKey: queryKeys.notifications.lists },
         (page) =>
           page && {
             ...page,

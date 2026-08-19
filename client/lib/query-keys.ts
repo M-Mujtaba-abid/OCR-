@@ -57,16 +57,32 @@ export const queryKeys = {
 
   users: {
     all: ["users"] as const,
+    /**
+     * Just the tables.
+     *
+     * Separate from `all` for the same reason `invoices.lists` is: `all` also
+     * matches `stats`, whose cached value is a bare `{ total, active, ... }`.
+     * An updater written to patch a row into `page.items` throws on it.
+     */
+    lists: ["users", "list"] as const,
     list: (params: ListUsersParams = {}) =>
-      [...queryKeys.users.all, "list", params] as const,
+      [...queryKeys.users.lists, params] as const,
     detail: (id: string) => [...queryKeys.users.all, "detail", id] as const,
     stats: [...(["users"] as const), "stats"] as const,
   },
 
   notifications: {
     all: ["notifications"] as const,
+    /**
+     * Just the pages of rows.
+     *
+     * Separate from `all`, which also matches `unread` — and that one caches a
+     * bare `{ count }`, not a page. Writing a page-shaped update across `all`
+     * hands the updater the count object and dies on its missing `items`.
+     */
+    lists: ["notifications", "list"] as const,
     list: (params: ListNotificationsParams = {}) =>
-      [...queryKeys.notifications.all, "list", params] as const,
+      [...queryKeys.notifications.lists, params] as const,
     unread: [...(["notifications"] as const), "unread"] as const,
   },
 } as const;
