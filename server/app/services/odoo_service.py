@@ -368,12 +368,26 @@ def match_recent_draft(
 # 16 can carry `picked` while still reporting 16.0. What matters is what fields
 # this database actually has, and that is the question `fields_get` answers.
 # ---------------------------------------------------------------------------
+#: This deployment's own attachment field on `account.move` — a many2many to
+#: `ir.attachment` added by a customisation module, not part of stock Odoo.
+#:
+#: Its form view marks it required for `move_type in ('out_invoice',
+#: 'in_invoice')`, which is a VIEW modifier: the ORM field is `required=False`,
+#: so a bill created over XML-RPC without it saves perfectly well and then
+#: cannot be saved again by a person who opens it in Odoo until they attach
+#: something by hand. Filling it is what closes that gap.
+#:
+#: Probed, never assumed. An Odoo without the customisation has to keep
+#: working, and writing a field that does not exist is a fault, not an ignored
+#: key.
+DOCUMENT_FIELD = "document_attachment_ids"
+
 #: Asked for by name so the reply is a handful of entries rather than the 200+
 #: a bare `fields_get` returns. Fields that do not exist are silently omitted,
 #: which is exactly the signal wanted.
 _PROBES: dict[str, list[str]] = {
     "stock.move": ["quantity", "picked", "quantity_done", "has_tracking"],
-    "account.move": ["payment_state", "invoice_date", "ref"],
+    "account.move": ["payment_state", "invoice_date", "ref", DOCUMENT_FIELD],
 }
 
 #: A schema, not data. It cannot change without an Odoo upgrade, which restarts
@@ -1581,28 +1595,36 @@ class OdooService:
                     res_id,
                     attachment.file_name,
                 )
-                return "attached", int(already[0])
-
-            result = await _run(
-                client.execute,
-                "ir.attachment",
-                "create",
-                [
-                    {
-                        # The extension is kept: Odoo's preview keys off it.
-                        "name": attachment.file_name,
-                        "type": "binary",
-                        # A base64 `str`, never `xmlrpc.client.Binary`. Binary
-                        # marshals as <base64>, which Odoo's XML-RPC layer
-                        # decodes on the way in — handing the field raw bytes it
-                        # then tries to base64-decode a second time.
-                        "datas": base64.b64encode(attachment.content).decode("ascii"),
-                        "res_model": res_model,
-                        "res_id": res_id,
-                        "mimetype": attachment.mime_type or "application/octet-stream",
-                    }
-                ],
-            )
+                attachment_id = int(already[0])
+            else:
+                result = await _run(
+                    client.execute,
+                    "ir.attachment",
+                    "create",
+                    [
+                        {
+                            # The extension is kept: Odoo's preview keys off it.
+                            "name": attachment.file_name,
+                            "type": "binary",
+                            # A base64 `str`, never `xmlrpc.client.Binary`.
+                            # Binary marshals as <base64>, which Odoo's XML-RPC
+                            # layer decodes on the way in — handing the field raw
+                            # bytes it then tries to base64-decode a second time.
+                            "datas": base64.b64encode(attachment.content).decode(
+                                "ascii"
+                            ),
+                            "res_model": res_model,
+                            "res_id": res_id,
+                            # `res_field` is deliberately left unset. An
+                            # attachment that carries one is a field's stored
+                            # binary, and Odoo hides those from the chatter —
+                            # which is the half of this that already worked.
+                            "mimetype": attachment.mime_type
+                            or "application/octet-stream",
+                        }
+                    ],
+                )
+                attachment_id = int(result[0] if isinstance(result, list) else result)
         except Exception:
             logger.exception(
                 "%s %s exists but the document could not be attached",
@@ -1611,7 +1633,87 @@ class OdooService:
             )
             return "failed", None
 
-        return "attached", int(result[0] if isinstance(result, list) else result)
+        # The document is now in the record's chatter. On a bill it also has to
+        # appear in the deployment's own document field, which is a separate
+        # link — see `_link_document_field`.
+        await self._link_document_field(
+            client, res_model=res_model, res_id=res_id, attachment_id=attachment_id
+        )
+        return "attached", attachment_id
+
+    async def _link_document_field(
+        self,
+        client: _BlockingOdooClient,
+        *,
+        res_model: str,
+        res_id: int,
+        attachment_id: int,
+    ) -> bool:
+        """Also file an already-created attachment under `DOCUMENT_FIELD`.
+
+        The scan has to be in two places on a vendor bill: the chatter, which
+        `_attach` has just done by writing `res_model`/`res_id`, and this
+        deployment's `document_attachment_ids`, which its form view demands
+        before a person can save the bill.
+
+        ONE `ir.attachment` serves both, not two. Checked against the bills this
+        Odoo already holds: every attachment sitting in that field has exactly
+        the shape `_attach` writes — `res_model='account.move'`, `res_id` set,
+        `res_field` empty — so the only thing ever missing was the many2many
+        row. Creating a second attachment would put the same scan on the bill
+        twice, once in each place.
+
+        `(4, id, 0)` links; it does not replace. `(6, 0, [id])` is the more
+        obvious command and the wrong one here — it would silently drop any
+        document somebody had already attached in Odoo, which on a bill being
+        corrected by hand is somebody's work.
+
+        Never raises, for the reason `_attach` does not: by the time this runs
+        the bill exists in Odoo and cannot be un-created from here, so a failed
+        link must not become a 502 for a request that succeeded. It is logged
+        loudly instead. The consequence of losing it is a reviewer attaching the
+        file by hand, not a wrong document.
+        """
+        # The field is on `account.move` alone — purchase orders were checked
+        # and do not carry it — and `_capabilities` only knows the models in
+        # `_PROBES`, so this guard has to come first.
+        if res_model != "account.move":
+            return False
+
+        try:
+            if DOCUMENT_FIELD not in await self._capabilities("account.move"):
+                logger.info(
+                    "account.move %s: this Odoo has no %s — chatter only",
+                    res_id,
+                    DOCUMENT_FIELD,
+                )
+                return False
+
+            await _run(
+                client.execute,
+                "account.move",
+                "write",
+                [res_id],
+                {DOCUMENT_FIELD: [(4, attachment_id, 0)]},
+            )
+        except Exception:
+            logger.exception(
+                "account.move %s: attachment %s is on the record but could not "
+                "be linked into %s — it will have to be attached by hand before "
+                "the bill can be saved in Odoo",
+                res_id,
+                attachment_id,
+                DOCUMENT_FIELD,
+            )
+            return False
+
+        logger.info(
+            "account.move %s: attachment %s linked into %s",
+            res_id,
+            attachment_id,
+            DOCUMENT_FIELD,
+        )
+        return True
 
 
 odoo_service = OdooService()
