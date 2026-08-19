@@ -2,6 +2,10 @@
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: "primary" | "secondary" | "danger" | "ghost";
+  /** "sm" is for controls that repeat once per table row, where full-size
+   *  padding is what pushes a row's actions wider than the column holding
+   *  them. Everything standalone stays "md". */
+  size?: "sm" | "md";
   isLoading?: boolean;
   fullWidth?: boolean;
 }
@@ -17,8 +21,16 @@ const VARIANTS: Record<NonNullable<ButtonProps["variant"]>, string> = {
     "text-slate-700 hover:bg-slate-100 focus-visible:ring-slate-300 dark:text-slate-200 dark:hover:bg-slate-800",
 };
 
+/** Padding and type size travel together — a small button with body-sized
+ *  text is not smaller, only tighter. */
+const SIZES: Record<NonNullable<ButtonProps["size"]>, string> = {
+  sm: "px-2.5 py-1.5 text-xs",
+  md: "px-4 py-2.5 text-sm",
+};
+
 export function Button({
   variant = "primary",
+  size = "md",
   isLoading = false,
   fullWidth = false,
   className,
@@ -34,11 +46,14 @@ export function Button({
       disabled={disabled || isLoading}
       aria-busy={isLoading || undefined}
       className={[
-        "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5",
-        "text-sm font-medium transition-colors",
+        // whitespace-nowrap: a label like "Re-match" breaking in half is what
+        // turns a row of actions into three lines of them.
+        "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg",
+        "font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
         "disabled:cursor-not-allowed disabled:opacity-60",
         "dark:focus-visible:ring-offset-slate-950",
+        SIZES[size],
         VARIANTS[variant],
         fullWidth ? "w-full" : "",
         className ?? "",

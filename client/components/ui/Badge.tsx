@@ -13,17 +13,38 @@ const TONES: Record<BadgeTone, string> = {
     "bg-indigo-50 text-indigo-700 ring-indigo-600/20 dark:bg-indigo-950 dark:text-indigo-300 dark:ring-indigo-400/20",
 };
 
+/** The same five outcomes at full strength, for the optional leading dot. */
+const DOTS: Record<BadgeTone, string> = {
+  positive: "bg-emerald-500",
+  negative: "bg-red-500",
+  warning: "bg-amber-500",
+  neutral: "bg-slate-400",
+  accent: "bg-indigo-500",
+};
+
 export function Badge({
   tone = "neutral",
+  dot = false,
   children,
 }: {
   tone?: BadgeTone;
+  /** A solid dot before the label. Worth it in a list, where the eye finds the
+   *  colour a beat before it reads the word; noise anywhere else. */
+  dot?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${TONES[tone]}`}
+      // Never wrapped. A two-word status breaking across three lines is what
+      // makes a table row tall enough to lose its own alignment.
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${TONES[tone]}`}
     >
+      {dot && (
+        <span
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOTS[tone]}`}
+        />
+      )}
       {children}
     </span>
   );

@@ -60,6 +60,39 @@ function formatDate(iso: string): string {
   });
 }
 
+function uploaderName(invoice: Invoice): string {
+  return (
+    invoice.uploader?.full_name?.trim() ||
+    invoice.uploader?.email ||
+    "a deleted user"
+  );
+}
+
+/**
+ * How much to trust the match, said in colour as well as in digits.
+ *
+ * The number alone is the same size and weight whether it reads 98 or 51, so a
+ * row nobody should accept looks exactly like one nobody needs to check.
+ */
+function confidenceClass(score: number): string {
+  if (score >= 90) return "text-emerald-700 dark:text-emerald-400";
+  if (score >= 75) return "text-amber-700 dark:text-amber-400";
+  return "text-slate-500 dark:text-slate-400";
+}
+
+/**
+ * The invoice list.
+ *
+ * Fits its container rather than scrolling sideways. A table wide enough to
+ * need a horizontal scrollbar hides its own right-hand columns — the actions,
+ * here — behind a gesture nobody makes, and the row a person came to act on is
+ * the part they cannot see.
+ *
+ * So the layout is fixed-width and the columns give way in order of how little
+ * they are needed: uploader first, then reference, then the timestamp. None of
+ * it is lost — each one folds into the file cell at the width where its column
+ * goes, which is also where a phone-shaped screen wants it anyway.
+ */
 export function InvoiceTable({
   invoices,
   pagination,
@@ -76,28 +109,24 @@ export function InvoiceTable({
 }: Props) {
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
-  const openFile = useOpenInvoiceFile();
-  const remove = useDeleteInvoice();
-  const runMatching = useRunMatching();
-
-  /** Which row is mid-request, so only that row's controls disable. */
-  const busyId =
-    (openFile.isPending ? openFile.variables : null) ??
-    (remove.isPending ? remove.variables?.id : null) ??
-    (runMatching.isPending ? runMatching.variables : null) ??
-    null;
-
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            {pagination
-              ? `${pagination.total} invoice${pagination.total === 1 ? "" : "s"}`
-              : loading
-                ? "Loading…"
-                : "—"}
-          </p>
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-slate-900 dark:text-white">
+              {pagination
+                ? `${pagination.total} invoice${pagination.total === 1 ? "" : "s"}`
+                : loading
+                  ? "Loading…"
+                  : "—"}
+            </p>
+            {status && (
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Filtered to {statusLabel(status).toLowerCase()}
+              </p>
+            )}
+          </div>
 
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-2 text-sm">
@@ -134,150 +163,48 @@ export function InvoiceTable({
           <div
             // Dimmed while a background refetch is in flight, so the data is
             // visibly stale rather than silently so.
-            className={`overflow-x-auto transition-opacity ${refreshing ? "opacity-60" : ""}`}
+            className={`transition-opacity ${refreshing ? "opacity-60" : ""}`}
           >
-            <table className="w-full min-w-[760px] text-left text-sm">
+            {/* table-fixed, so a long file name compresses its own column
+                instead of widening the table and pushing the actions off the
+                right-hand edge. */}
+            <table className="w-full table-fixed text-left text-sm">
               <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                {/* The widths sum to 100 with every column showing. As each
+                    one drops out the browser shares its space across what is
+                    left, so the table stays full-width at every breakpoint
+                    without a second set of numbers to keep in step. */}
                 <tr>
-                  <th className="px-4 py-3 font-medium">File</th>
+                  <th className="w-[26%] px-4 py-3 font-medium">File</th>
                   {showUploader && (
-                    <th className="px-4 py-3 font-medium">Uploaded by</th>
+                    <th className="hidden w-[14%] px-4 py-3 font-medium xl:table-cell">
+                      Uploaded by
+                    </th>
                   )}
-                  <th className="px-4 py-3 font-medium">Reference</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Uploaded</th>
-                  <th className="px-4 py-3 text-right font-medium">
+                  <th className="hidden w-[11%] px-4 py-3 font-medium lg:table-cell">
+                    Reference
+                  </th>
+                  <th className="w-[17%] px-4 py-3 font-medium">Status</th>
+                  <th className="hidden w-[10%] px-4 py-3 font-medium md:table-cell">
+                    Uploaded
+                  </th>
+                  <th className="w-[22%] px-4 py-3 text-right font-medium">
                     <span className="sr-only">Actions</span>
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {invoices.map((invoice) => {
-                  const busy = busyId === invoice.id;
-                  const confirming = confirmId === invoice.id;
-
-                  return (
-                    <tr key={invoice.id}>
-                      <td className="px-4 py-3">
-                        <p className="max-w-[280px] truncate font-medium text-slate-900 dark:text-white">
-                          {invoice.file_name}
-                        </p>
-                        <p className="text-xs text-slate-500 dark:text-slate-400">
-                          {formatBytes(invoice.file_size_bytes)}
-                          {invoice.page_count ? ` · ${invoice.page_count} pages` : ""}
-                        </p>
-                      </td>
-
-                      {showUploader && (
-                        <td className="px-4 py-3">
-                          <p className="text-slate-900 dark:text-slate-100">
-                            {invoice.uploader?.full_name?.trim() || "—"}
-                          </p>
-                          <p className="text-xs text-slate-500 dark:text-slate-400">
-                            {invoice.uploader?.email ?? "deleted user"}
-                          </p>
-                        </td>
-                      )}
-
-                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">
-                        {invoice.member_ref_no || invoice.extracted_invoice_no || "—"}
-                      </td>
-
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <InvoiceStatusBadge status={invoice.status} />
-                          {/* A spinner beside a transient status is what tells
-                              the user the page is live rather than stuck. */}
-                          {TRANSIENT_STATUSES.has(invoice.status) && (
-                            <span
-                              aria-hidden="true"
-                              className="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600 dark:border-slate-700 dark:border-t-slate-300"
-                            />
-                          )}
-                        </div>
-                        {invoice.matched_po_name && (
-                          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                            {invoice.matched_po_name}
-                            {invoice.confidence_score != null &&
-                              ` · ${Math.round(invoice.confidence_score)}%`}
-                          </p>
-                        )}
-                      </td>
-
-                      <td className="whitespace-nowrap px-4 py-3 text-slate-600 dark:text-slate-400">
-                        {formatDate(invoice.created_at)}
-                      </td>
-
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-2">
-                          {confirming ? (
-                            <>
-                              <span className="text-xs text-slate-600 dark:text-slate-400">
-                                Delete?
-                              </span>
-                              <Button
-                                variant="danger"
-                                disabled={busy}
-                                isLoading={busy}
-                                onClick={() =>
-                                  remove.mutate(invoice, {
-                                    onSuccess: () => setConfirmId(null),
-                                  })
-                                }
-                              >
-                                Yes
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                disabled={busy}
-                                onClick={() => setConfirmId(null)}
-                              >
-                                No
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              {showPipeline && MATCHABLE.has(invoice.status) && (
-                                <Button
-                                  disabled={busy}
-                                  isLoading={busy}
-                                  onClick={() => runMatching.mutate(invoice.id)}
-                                >
-                                  {invoice.matched_po_name ? "Re-match" : "Match"}
-                                </Button>
-                              )}
-                              {showPipeline && (
-                                <Link
-                                  href={`/admin/invoices/${invoice.id}`}
-                                  className="rounded-lg px-3 py-2 text-sm font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
-                                >
-                                  Review
-                                </Link>
-                              )}
-                              <Button
-                                variant="secondary"
-                                disabled={busy}
-                                isLoading={busy}
-                                onClick={() => openFile.mutate(invoice.id)}
-                              >
-                                View
-                              </Button>
-                              {canDelete && (
-                                <Button
-                                  variant="ghost"
-                                  disabled={busy}
-                                  onClick={() => setConfirmId(invoice.id)}
-                                >
-                                  Delete
-                                </Button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {invoices.map((invoice) => (
+                  <InvoiceRow
+                    key={invoice.id}
+                    invoice={invoice}
+                    showUploader={showUploader}
+                    canDelete={canDelete}
+                    showPipeline={showPipeline}
+                    confirming={confirmId === invoice.id}
+                    onConfirm={setConfirmId}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -306,5 +233,200 @@ export function InvoiceTable({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * One row.
+ *
+ * Split out of the table so each row owns the mutations it fires. The table
+ * held all three for the whole list and worked out which row was busy by
+ * comparing each mutation's `variables` against the row's id — correct, but it
+ * meant "is this row busy" was assembled from three optional reads at the top
+ * of the table rather than simply asked here. It also re-rendered every row on
+ * every state change in any of them.
+ */
+function InvoiceRow({
+  invoice,
+  showUploader,
+  canDelete,
+  showPipeline,
+  confirming,
+  onConfirm,
+}: {
+  invoice: Invoice;
+  showUploader: boolean;
+  canDelete: boolean;
+  showPipeline: boolean;
+  confirming: boolean;
+  onConfirm: (id: string | null) => void;
+}) {
+  const openFile = useOpenInvoiceFile();
+  const remove = useDeleteInvoice();
+  const runMatching = useRunMatching();
+
+  const busy = openFile.isPending || remove.isPending || runMatching.isPending;
+  const working = TRANSIENT_STATUSES.has(invoice.status);
+  const reference = invoice.member_ref_no || invoice.extracted_invoice_no || "—";
+
+  return (
+    <tr className="align-top transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40">
+      <td className="px-4 py-3">
+        <p
+          className="truncate font-medium text-slate-900 dark:text-white"
+          title={invoice.file_name}
+        >
+          {invoice.file_name}
+        </p>
+        <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+          {formatBytes(invoice.file_size_bytes)}
+          {invoice.page_count
+            ? ` · ${invoice.page_count} page${invoice.page_count === 1 ? "" : "s"}`
+            : ""}
+        </p>
+
+        {/* Everything whose own column has given way at this width. Shown
+            here rather than dropped: a narrow screen is not a reason to know
+            less about a row. */}
+        {showUploader && (
+          <p className="truncate text-xs text-slate-500 dark:text-slate-400 xl:hidden">
+            {uploaderName(invoice)}
+          </p>
+        )}
+        <p className="truncate text-xs text-slate-500 dark:text-slate-400 lg:hidden">
+          Ref {reference}
+        </p>
+        <p className="truncate text-xs text-slate-500 dark:text-slate-400 md:hidden">
+          {formatDate(invoice.created_at)}
+        </p>
+      </td>
+
+      {showUploader && (
+        <td className="hidden px-4 py-3 xl:table-cell">
+          <p className="truncate text-slate-900 dark:text-slate-100">
+            {invoice.uploader?.full_name?.trim() || "—"}
+          </p>
+          <p
+            className="truncate text-xs text-slate-500 dark:text-slate-400"
+            title={invoice.uploader?.email}
+          >
+            {invoice.uploader?.email ?? "deleted user"}
+          </p>
+        </td>
+      )}
+
+      <td className="hidden px-4 py-3 lg:table-cell">
+        <p
+          className="truncate text-slate-700 dark:text-slate-300"
+          title={reference}
+        >
+          {reference}
+        </p>
+      </td>
+
+      <td className="px-4 py-3">
+        <div className="flex items-center gap-2">
+          <InvoiceStatusBadge status={invoice.status} dot />
+          {/* A spinner beside a transient status is what tells the user the
+              page is live rather than stuck. */}
+          {working && (
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600 dark:border-slate-700 dark:border-t-slate-300"
+            />
+          )}
+        </div>
+        {invoice.matched_po_name && (
+          <p
+            className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400"
+            title={`Matched to ${invoice.matched_po_name}`}
+          >
+            {invoice.matched_po_name}
+            {invoice.confidence_score != null && (
+              <span
+                className={`ml-1 font-medium ${confidenceClass(invoice.confidence_score)}`}
+              >
+                {Math.round(invoice.confidence_score)}%
+              </span>
+            )}
+          </p>
+        )}
+      </td>
+
+      <td className="hidden px-4 py-3 text-slate-600 dark:text-slate-400 md:table-cell">
+        <span className="whitespace-nowrap">{formatDate(invoice.created_at)}</span>
+      </td>
+
+      <td className="px-4 py-3">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {confirming ? (
+            <>
+              <span className="text-xs text-slate-600 dark:text-slate-400">
+                Delete?
+              </span>
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={busy}
+                isLoading={remove.isPending}
+                onClick={() =>
+                  remove.mutate(invoice, { onSuccess: () => onConfirm(null) })
+                }
+              >
+                Yes
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => onConfirm(null)}
+              >
+                No
+              </Button>
+            </>
+          ) : (
+            <>
+              {showPipeline && MATCHABLE.has(invoice.status) && (
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  isLoading={runMatching.isPending}
+                  onClick={() => runMatching.mutate(invoice.id)}
+                >
+                  {invoice.matched_po_name ? "Re-match" : "Match"}
+                </Button>
+              )}
+              {showPipeline && (
+                <Link
+                  href={`/admin/invoices/${invoice.id}`}
+                  className="whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+                >
+                  Review
+                </Link>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={busy}
+                isLoading={openFile.isPending}
+                onClick={() => openFile.mutate(invoice.id)}
+              >
+                View
+              </Button>
+              {canDelete && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => onConfirm(invoice.id)}
+                >
+                  Delete
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
