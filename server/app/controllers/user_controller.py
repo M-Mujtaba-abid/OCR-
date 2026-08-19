@@ -10,7 +10,7 @@ import uuid
 
 from app.lib.responses import ApiResponse, PaginatedData, PaginationMeta
 from app.models.user import User, UserRole
-from app.schemas.user import UserRead, UserRoleUpdate, UserStats
+from app.schemas.user import UserCreate, UserRead, UserRoleUpdate, UserStats
 from app.services.user_service import UserService
 
 
@@ -19,10 +19,10 @@ class UserController:
         self.service = service
 
     async def list_users(
-        self, *, page: int, page_size: int, role: UserRole | None
+        self, *, actor: User, page: int, page_size: int, role: UserRole | None
     ) -> ApiResponse[PaginatedData[UserRead]]:
         items, total = await self.service.list_users(
-            page=page, page_size=page_size, role=role
+            actor=actor, page=page, page_size=page_size, role=role
         )
         return ApiResponse.ok(
             PaginatedData[UserRead](
@@ -38,12 +38,30 @@ class UserController:
             message="Users retrieved",
         )
 
-    async def get_stats(self) -> ApiResponse[UserStats]:
-        return ApiResponse.ok(await self.service.get_stats(), message="Stats retrieved")
+    async def get_stats(self, *, actor: User) -> ApiResponse[UserStats]:
+        return ApiResponse.ok(
+            await self.service.get_stats(actor=actor), message="Stats retrieved"
+        )
 
-    async def get_user(self, user_id: uuid.UUID) -> ApiResponse[UserRead]:
-        user = await self.service.get_user(user_id)
+    async def get_user(
+        self, *, actor: User, user_id: uuid.UUID
+    ) -> ApiResponse[UserRead]:
+        user = await self.service.get_user(actor=actor, user_id=user_id)
         return ApiResponse.ok(UserRead.model_validate(user), message="User retrieved")
+
+    async def create_user(
+        self, *, actor: User, payload: UserCreate
+    ) -> ApiResponse[UserRead]:
+        user = await self.service.create_user(
+            actor=actor,
+            email=payload.email,
+            password=payload.password,
+            full_name=payload.full_name,
+            role=payload.role,
+        )
+        return ApiResponse.ok(
+            UserRead.model_validate(user), message="User created"
+        )
 
     async def change_role(
         self, *, actor: User, user_id: uuid.UUID, payload: UserRoleUpdate

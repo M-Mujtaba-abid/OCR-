@@ -179,14 +179,21 @@ class MatchHistoryRepository:
     async def list_all(
         self,
         *,
-        tenant_id: str = "default",
+        company_id: uuid.UUID,
         limit: int = 20,
         offset: int = 0,
         status: InvoiceStatus | None = None,
         open_only: bool = False,
         uploaded_by: uuid.UUID | None = None,
     ) -> tuple[list[MatchHistory], int]:
-        where: list[ColumnElement[bool]] = [MatchHistory.tenant_id == tenant_id]
+        """The admin queue for ONE company.
+
+        `company_id` is keyword-only and undefaulted, like every scoped read in
+        this repository. The default it used to carry meant a caller who forgot
+        got "the default tenant" — which was every row in the table, returned
+        without complaint.
+        """
+        where: list[ColumnElement[bool]] = [MatchHistory.company_id == company_id]
         if status is not None:
             where.append(MatchHistory.status == status)
         elif open_only:
@@ -217,7 +224,7 @@ class MatchHistoryRepository:
     async def list_billed(
         self,
         *,
-        tenant_id: str = "default",
+        company_id: uuid.UUID,
         limit: int = 20,
         offset: int = 0,
         uploaded_by: uuid.UUID | None = None,
@@ -235,7 +242,7 @@ class MatchHistoryRepository:
         Postgres puts nulls by default on a DESC sort.
         """
         where: list[ColumnElement[bool]] = [
-            MatchHistory.tenant_id == tenant_id,
+            MatchHistory.company_id == company_id,
             MatchHistory.pushed_to_odoo.is_(True),
         ]
         if uploaded_by is not None:
@@ -251,14 +258,22 @@ class MatchHistoryRepository:
     async def count(
         self,
         *,
-        tenant_id: str | None = None,
+        company_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
         status: InvoiceStatus | None = None,
         open_only: bool = False,
     ) -> int:
-        stmt = select(func.count()).select_from(MatchHistory)
-        if tenant_id is not None:
-            stmt = stmt.where(MatchHistory.tenant_id == tenant_id)
+        """Invoices in one company, optionally narrowed further.
+
+        This used to take `tenant_id: str | None = None` and skip the filter
+        when it was None — so the way to count every invoice in the database
+        was to pass nothing, which is also what a mistake looks like.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(MatchHistory)
+            .where(MatchHistory.company_id == company_id)
+        )
         if user_id is not None:
             stmt = stmt.where(MatchHistory.uploaded_by == user_id)
         if status is not None:
@@ -268,7 +283,7 @@ class MatchHistoryRepository:
         return int((await self.db.execute(stmt)).scalar_one())
 
     async def count_by_status(
-        self, *, tenant_id: str = "default", user_id: uuid.UUID | None = None
+        self, *, company_id: uuid.UUID, user_id: uuid.UUID | None = None
     ) -> dict[InvoiceStatus, int]:
         """One GROUP BY instead of thirteen COUNTs.
 
@@ -277,7 +292,7 @@ class MatchHistoryRepository:
         """
         stmt = (
             select(MatchHistory.status, func.count())
-            .where(MatchHistory.tenant_id == tenant_id)
+            .where(MatchHistory.company_id == company_id)
             .group_by(MatchHistory.status)
         )
         if user_id is not None:
@@ -330,7 +345,7 @@ class MatchHistoryRepository:
         return list((await self.db.execute(stmt)).scalars().all())
 
     async def daily_counts(
-        self, *, since: dt.date, tenant_id: str = "default"
+        self, *, since: dt.date, company_id: uuid.UUID
     ) -> list[tuple[dt.date, int, int]]:
         """Invoices received and reviewed per day, in ONE statement.
 
@@ -350,15 +365,18 @@ class MatchHistoryRepository:
             FROM (
                 SELECT created_at AS day, 'received' AS kind
                   FROM match_history
-                 WHERE tenant_id = :tenant AND created_at >= :since
+                 WHERE company_id = :company AND created_at >= :since
                 UNION ALL
                 SELECT reviewed_at AS day, 'reviewed' AS kind
                   FROM match_history
-                 WHERE tenant_id = :tenant AND reviewed_at IS NOT NULL
+                 WHERE company_id = :company AND reviewed_at IS NOT NULL
                    AND reviewed_at >= :since
             ) events
             GROUP BY 1
             ORDER BY 1
         """)
-        rows = await self.db.execute(stmt, {"tenant": tenant_id, "since": since})
+        # Bound, never interpolated — the one place in this repository that
+        # writes SQL by hand is also the one where a formatted string would be
+        # an injection point rather than a style choice.
+        rows = await self.db.execute(stmt, {"company": company_id, "since": since})
         return [(day, int(received), int(reviewed)) for day, received, reviewed in rows]

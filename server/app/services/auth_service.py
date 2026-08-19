@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import (
-    EmailAlreadyRegisteredError,
     InactiveUserError,
     InvalidCredentialsError,
     InvalidRefreshTokenError,
@@ -25,14 +24,13 @@ from app.core.security import (
     DUMMY_PASSWORD_HASH,
     create_access_token,
     generate_refresh_token,
-    hash_password,
     hash_refresh_token,
     verify_and_update_password,
     verify_password,
 )
 from app.lib.logging import get_logger
 from app.models.auth_session import AuthSession
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.repositories.auth_session_repository import AuthSessionRepository
 from app.repositories.user_repository import UserRepository
 
@@ -70,26 +68,14 @@ class AuthService:
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
-    async def register(
-        self, *, email: str, password: str, full_name: str | None = None
-    ) -> User:
-        if await self.users.email_exists(email):
-            raise EmailAlreadyRegisteredError()
-
-        user = await self.users.create(
-            email=email,
-            password_hash=hash_password(password),
-            full_name=full_name,
-            # Always the lowest role. Never derive privilege from user input —
-            # an attacker-supplied `role` field is how self-registration
-            # becomes privilege escalation.
-            role=UserRole.MEMBER,
-            is_active=True,
-            is_verified=False,
-        )
-        await self.db.commit()
-        logger.info("user registered: %s", user.id)
-        return user
+    # There is no `register` here any more.
+    #
+    # Every account belongs to a company, and a public sign-up form cannot say
+    # which one. Auto-assigning a stranger to whichever company happened to be
+    # there is how an uninvited address ends up inside a real business's
+    # payables — so account creation moved to `UserService.create_user`, where
+    # the company comes from the administrator making the request and cannot be
+    # supplied by the person being created.
 
     # ------------------------------------------------------------------
     # Login

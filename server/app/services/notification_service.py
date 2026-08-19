@@ -31,49 +31,62 @@ class NotificationService:
     async def notify_admins(
         self,
         *,
+        company_id: uuid.UUID,
         type: NotificationType,
         title: str,
         message: str | None = None,
         match_history_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
-        tenant_id: str = "default",
     ) -> int:
-        """Notify every active admin. Returns how many rows were written.
+        """Notify every active admin OF THIS COMPANY.
+
+        Returns how many rows were written.
 
         Managers are deliberately excluded: they approve matches, they do not
         run the intake queue. Widening this is a one-line change if that turns
         out to be wrong.
+
+        The company is not optional and not inferred. Notification titles carry
+        file names and vendor names, so an unscoped fan-out does not merely
+        annoy the wrong people — it tells one business what another is buying.
         """
-        admin_ids = await self.users.list_ids_by_role(UserRole.ADMIN)
+        admin_ids = await self.users.list_ids_by_role(
+            UserRole.ADMIN, company_id=company_id
+        )
         if not admin_ids:
-            # Not an error — a fresh install has no admin yet. Logged because
-            # it means uploads are piling up with nobody watching.
-            logger.warning("No active admin to notify for %s", type.value)
+            # Not an error — a company whose admin has been deactivated, or one
+            # created moments ago. Logged because it means uploads are piling
+            # up with nobody watching.
+            logger.warning(
+                "No active admin in company %s to notify for %s",
+                company_id,
+                type.value,
+            )
             return 0
 
         return await self.notifications.create_many(
+            company_id=company_id,
             user_ids=admin_ids,
             type=type,
             title=title,
             message=message,
             match_history_id=match_history_id,
             batch_id=batch_id,
-            tenant_id=tenant_id,
         )
 
     async def notify_user(
         self,
         *,
+        company_id: uuid.UUID,
         user_id: uuid.UUID,
         type: NotificationType,
         title: str,
         message: str | None = None,
         match_history_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
-        tenant_id: str = "default",
     ) -> Notification:
         return await self.notifications.create(
-            tenant_id=tenant_id,
+            company_id=company_id,
             user_id=user_id,
             type=type,
             title=title,

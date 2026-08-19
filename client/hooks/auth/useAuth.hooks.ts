@@ -18,7 +18,6 @@ import { homePathFor } from "@/lib/auth/roles";
 import type {
   LoginInput,
   Permission,
-  RegisterInput,
   Session,
 } from "@/types/user.type";
 
@@ -131,22 +130,8 @@ export function useSessionExpiryRedirect() {
  * Mutations
  * ---------------------------------------------------------------------- */
 
-export function useRegister() {
-  const router = useRouter();
-
-  return useMutation({
-    mutationFn: (data: RegisterInput) => authService.register(data),
-    onSuccess: (user) => {
-      toast.success("Account created. Please sign in.");
-      // The backend issues no tokens on register, so there is nothing to store
-      // — the user goes to the login form with their email pre-filled.
-      router.push(`/login?registered=1&email=${encodeURIComponent(user.email)}`);
-    },
-    onError: (error: ApiError) => {
-      toast.error(error.message || "Registration failed");
-    },
-  });
-}
+// No `useRegister`. Accounts are created by a company's own administrator —
+// see `useCreateUser` in hooks/user/useUsers.hooks.ts.
 
 export function useLogin() {
   const router = useRouter();

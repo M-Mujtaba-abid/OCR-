@@ -20,7 +20,6 @@ from app.schemas.auth import (
     LoginData,
     LoginRequest,
     LogoutData,
-    RegisterRequest,
     SessionRead,
     TokenData,
 )
@@ -86,16 +85,8 @@ class AuthController:
     # ------------------------------------------------------------------
     # Endpoints
     # ------------------------------------------------------------------
-    async def register(self, payload: RegisterRequest) -> ApiResponse[UserRead]:
-        user = await self.service.register(
-            email=payload.email,
-            password=payload.password,
-            full_name=payload.full_name,
-        )
-        return ApiResponse.ok(
-            data=UserRead.model_validate(user),
-            message="Account created successfully",
-        )
+    # No `register`. Accounts are created by a company's own administrator
+    # through POST /users — see the note where the route used to be.
 
     async def login(
         self,

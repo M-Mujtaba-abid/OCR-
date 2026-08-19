@@ -44,10 +44,18 @@ export interface LoginInput {
   password: string;
 }
 
-export interface RegisterInput {
+/**
+ * POST /users — an administrator adding somebody to their company.
+ *
+ * What `RegisterInput` became. There is no `company_id`: the server takes the
+ * company from the administrator's session, so a browser has nothing to say
+ * about which company an account joins.
+ */
+export interface CreateUserInput {
   email: string;
   password: string;
   full_name?: string | null;
+  role: UserRole;
 }
 
 export interface RoleUpdateInput {

@@ -2,7 +2,6 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 
 import { LoginForm } from "@/components/auth/LoginForm";
-import { RegisteredNotice } from "@/components/auth/RegisteredNotice";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -12,8 +11,8 @@ export const metadata: Metadata = {
 /**
  * Server Component shell. Only the form itself is a Client Component.
  *
- * Both children read searchParams via useSearchParams, which Next requires to
- * sit inside a Suspense boundary — without it, the whole route is forced into
+ * The form reads searchParams via useSearchParams, which Next requires to sit
+ * inside a Suspense boundary — without it, the whole route is forced into
  * client-side rendering and `next build` fails.
  */
 export default function LoginPage() {
@@ -27,10 +26,6 @@ export default function LoginPage() {
           Sign in to continue to your dashboard.
         </p>
       </div>
-
-      <Suspense fallback={null}>
-        <RegisteredNotice />
-      </Suspense>
 
       <Suspense fallback={<div className="h-64" />}>
         <LoginForm />

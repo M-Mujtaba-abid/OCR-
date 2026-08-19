@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { AddUserForm } from "@/components/admin/AddUserForm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
@@ -26,6 +27,7 @@ export function UsersPanel({ adminCount }: { adminCount: number }) {
 
   const [page, setPage] = useState(1);
   const [roleFilter, setRoleFilter] = useState<UserRole | "">("");
+  const [adding, setAdding] = useState(false);
 
   const { data, isLoading, isFetching, refetch } = useUsers({
     page,
@@ -43,11 +45,23 @@ export function UsersPanel({ adminCount }: { adminCount: number }) {
     null;
 
   const canManage = can("user.update");
+  // Separate from `user.update`: creating an account and editing one are
+  // different capabilities, and the API gates them separately too.
+  const canCreate = can("user.create");
 
   if (!user) return null;
 
   return (
     <div className="space-y-4">
+      {canCreate &&
+        (adding ? (
+          <AddUserForm onDone={() => setAdding(false)} />
+        ) : (
+          <div className="flex justify-end">
+            <Button onClick={() => setAdding(true)}>Add user</Button>
+          </div>
+        ))}
+
       <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
           <p className="text-sm text-slate-600 dark:text-slate-400">

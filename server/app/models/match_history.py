@@ -39,6 +39,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.models.company import CompanyScopedMixin
 
 if TYPE_CHECKING:
     from app.models.invoice_line_match import InvoiceLineMatch
@@ -102,20 +103,24 @@ WITHDRAWABLE_STATUSES: frozenset[InvoiceStatus] = frozenset(
 )
 
 
-class MatchHistory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+class MatchHistory(UUIDPrimaryKeyMixin, CompanyScopedMixin, TimestampMixin, Base):
     __tablename__ = "match_history"
     __table_args__ = (
         Index("ix_match_history_tenant", "tenant_id"),
         Index("ix_match_history_status", "status"),
         Index("ix_match_history_batch", "batch_id"),
         Index("ix_match_history_uploader", "uploaded_by"),
-        # The admin queue's exact query shape: "open invoices for this tenant,
+        # The admin queue's exact query shape: "open invoices for this company,
         # newest first". A composite beats two single-column indexes here
         # because Postgres can then satisfy the filter and the sort together.
         Index("ix_match_history_tenant_status", "tenant_id", "status"),
+        Index("ix_match_history_company_status", "company_id", "status"),
         Index("ix_match_history_created", "created_at"),
     )
 
+    # SUPERSEDED by `company_id`, and kept only until every reader has moved.
+    # Both columns are populated and agree; nothing new should read this one.
+    # It goes in the migration that removes the last caller.
     tenant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, default="default", server_default="default"
     )

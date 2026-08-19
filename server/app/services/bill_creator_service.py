@@ -685,6 +685,7 @@ async def create_bill_for_invoice(
             title=f"{invoice.file_name} was billed in Odoo",
             message=f"{created.display_name} was created against {order.name}.",
             match_history_id=invoice.id,
+            company_id=invoice.company_id,
             tenant_id=invoice.tenant_id,
         )
 

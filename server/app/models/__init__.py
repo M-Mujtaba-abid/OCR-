@@ -7,6 +7,7 @@ imported here is invisible to migrations and silently never gets a table.
 
 from app.db.base import Base
 from app.models.auth_session import AuthSession
+from app.models.company import Company, CompanyOdooConfig, CompanyScopedMixin
 from app.models.invoice_line_match import InvoiceLineMatch, LineMatchStatus
 from app.models.match_history import (
     OPEN_STATUSES,
@@ -22,6 +23,9 @@ __all__ = [
     "Base",
     "AuthSession",
     "BatchStatus",
+    "Company",
+    "CompanyOdooConfig",
+    "CompanyScopedMixin",
     "InvoiceLineMatch",
     "InvoiceStatus",
     "LineMatchStatus",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers.auth_controller import AuthController
@@ -23,7 +23,6 @@ from app.schemas.auth import (
     LoginData,
     LoginRequest,
     LogoutData,
-    RegisterRequest,
     SessionRead,
     TokenData,
 )
@@ -54,17 +53,17 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
 }
 
 
-@router.post(
-    "/register",
-    response_model=ApiResponse[UserRead],
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a new account",
-    responses=ERROR_RESPONSES,
-)
-async def register(
-    payload: RegisterRequest, controller: Controller
-) -> ApiResponse[UserRead]:
-    return await controller.register(payload)
+# There is no POST /auth/register.
+#
+# Every account belongs to a company, and a public sign-up form cannot say
+# which one — the person filling it in is a stranger to every company in the
+# system. Auto-assigning them to one means an uninvited address becomes a
+# member of a real business's account, with a real view of its payables.
+#
+# Accounts are created by an administrator of the company they join:
+# `POST /users`, scoped to the caller's own company and gated on `user.create`.
+# The endpoint was removed rather than left returning an error, so the answer
+# to "can a stranger create an account here" is visible in the route table.
 
 
 @router.post(

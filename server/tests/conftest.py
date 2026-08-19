@@ -20,7 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
 from app.db.session import engine, get_db
 from app.main import app as fastapi_app
+from app.models.company import Company
 from app.models.user import User, UserRole
+from app.repositories.company_repository import CompanyRepository
 from app.repositories.user_repository import UserRepository
 from app.core.security import hash_password
 
@@ -76,8 +78,30 @@ def password() -> str:
 
 
 @pytest_asyncio.fixture
-async def existing_user(db: AsyncSession, unique_email: str, password: str) -> User:
+async def company(db: AsyncSession) -> Company:
+    """The company every fixture user belongs to.
+
+    Resolved rather than created: the database these tests run against already
+    holds the company every existing row was migrated into, and a second one
+    would make `sole_active()` ambiguous — which is precisely the condition
+    that turns registration off.
+    """
+    existing = await CompanyRepository(db).sole_active()
+    if existing is not None:
+        return existing
+
+    created = Company(name="Test Company", slug=f"test-{uuid.uuid4().hex[:8]}")
+    db.add(created)
+    await db.commit()
+    return created
+
+
+@pytest_asyncio.fixture
+async def existing_user(
+    db: AsyncSession, company: Company, unique_email: str, password: str
+) -> User:
     user = await UserRepository(db).create(
+        company_id=company.id,
         email=unique_email,
         password_hash=hash_password(password),
         full_name="Existing User",
@@ -88,8 +112,27 @@ async def existing_user(db: AsyncSession, unique_email: str, password: str) -> U
 
 
 @pytest_asyncio.fixture
-async def inactive_user(db: AsyncSession, password: str) -> User:
+async def admin_user(db: AsyncSession, company: Company, password: str) -> User:
+    """An administrator of the same company as `existing_user`.
+
+    Account creation lives behind `user.create` now, so anything that needs a
+    second account has to go through somebody entitled to make one.
+    """
     user = await UserRepository(db).create(
+        company_id=company.id,
+        email=f"admin-{uuid.uuid4().hex[:12]}@example.com",
+        password_hash=hash_password(password),
+        full_name="Company Admin",
+        role=UserRole.ADMIN,
+    )
+    await db.commit()
+    return user
+
+
+@pytest_asyncio.fixture
+async def inactive_user(db: AsyncSession, company: Company, password: str) -> User:
+    user = await UserRepository(db).create(
+        company_id=company.id,
         email=f"inactive-{uuid.uuid4().hex[:12]}@example.com",
         password_hash=hash_password(password),
         is_active=False,

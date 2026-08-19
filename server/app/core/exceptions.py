@@ -141,6 +141,12 @@ class UserNotFoundError(NotFoundError):
     message = "User not found."
 
 
+# There is no "sign-up needs a company" error, because there is no sign-up.
+# Public registration was removed rather than conditioned: an account is created
+# by an administrator of the company it joins, and the company comes from that
+# administrator's own session. See `UserService.create_user`.
+
+
 # --------------------------------------------------------------------------
 # File upload / object storage
 # --------------------------------------------------------------------------

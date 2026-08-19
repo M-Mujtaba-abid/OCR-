@@ -189,6 +189,7 @@ async def _persist(
 
     for index, extra in enumerate(document.invoices[1:], start=2):
         sibling = await repo.create(
+            company_id=invoice.company_id,
             tenant_id=invoice.tenant_id,
             uploaded_by=invoice.uploaded_by,
             member_ref_no=invoice.member_ref_no,

@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.models.company import CompanyScopedMixin
 
 if TYPE_CHECKING:
     from app.models.match_history import MatchHistory
@@ -30,13 +31,15 @@ class BatchStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class ProcessingBatch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+class ProcessingBatch(UUIDPrimaryKeyMixin, CompanyScopedMixin, TimestampMixin, Base):
     __tablename__ = "processing_batches"
     __table_args__ = (
         Index("ix_batches_started_by", "started_by"),
         Index("ix_batches_status", "status"),
+        Index("ix_processing_batches_company_id", "company_id"),
     )
 
+    # Superseded by `company_id` — see the note on MatchHistory.tenant_id.
     tenant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, default="default", server_default="default"
     )

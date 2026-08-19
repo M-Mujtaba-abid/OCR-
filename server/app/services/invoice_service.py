@@ -23,6 +23,7 @@ from app.core.exceptions import (
     NotFoundError,
     UnsupportedFileTypeError,
 )
+from app.core.tenancy import company_of
 from app.lib.logging import get_logger
 from app.models.match_history import (
     OPEN_STATUSES,
@@ -99,6 +100,11 @@ class InvoiceService:
             )
 
         stored_keys: list[str] = []
+        # Whose invoices these are, taken from the uploader rather than from
+        # anything in the request. Resolved before the first byte is stored, so
+        # an account with no company fails here instead of after the upload.
+        company_id = company_of(user)
+
         created: list[MatchHistory] = []
         rejected: list[UploadRejection] = []
 
@@ -154,6 +160,7 @@ class InvoiceService:
                     stored_keys.append(outcome.key)
                     rows.append(
                         {
+                            "company_id": company_id,
                             "tenant_id": tenant_id,
                             # The relationship, not just the id: it is the
                             # object already loaded in this session, so setting
@@ -200,6 +207,7 @@ class InvoiceService:
                 # Only meaningful for a single upload; for a batch the admin
                 # opens the queue rather than one specific row.
                 match_history_id=created[0].id if len(created) == 1 else None,
+                company_id=company_id,
                 tenant_id=tenant_id,
             )
 
@@ -302,9 +310,20 @@ class InvoiceService:
                 code="TOO_MANY_FILES",
             )
 
+        company_id = company_of(user)
+
         created: list[MatchHistory] = []
         rejected: list[UploadRejection] = []
 
+        # The one line standing between a crafted key and another company's
+        # objects: a registered key must sit under the prefix this caller was
+        # issued. It is built from `tenant_id` and NOT from anything in the
+        # request, which is what makes it a boundary rather than a formality.
+        #
+        # `tenant_id` is still the literal "default" for every caller, so today
+        # this separates nobody — it starts doing real work the moment the
+        # prefix becomes the caller's own company slug, which is where the
+        # storage half of this migration lands.
         prefix = f"{INVOICE_FOLDER}/{tenant_id}/"
 
         async def inspect(
@@ -348,6 +367,7 @@ class InvoiceService:
                 else:
                     rows.append(
                         {
+                            "company_id": company_id,
                             "tenant_id": tenant_id,
                             # The loaded User, not the bare id — see the note in
                             # `upload_invoices`. Saves one SELECT per invoice.
@@ -390,6 +410,7 @@ class InvoiceService:
                     + (f" (ref {member_ref_no})" if member_ref_no else "")
                 ),
                 match_history_id=created[0].id if len(created) == 1 else None,
+                company_id=company_id,
                 tenant_id=tenant_id,
             )
             await self.db.commit()

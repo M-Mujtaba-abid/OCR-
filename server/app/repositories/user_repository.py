@@ -27,6 +27,7 @@ class UserRepository:
     async def create(
         self,
         *,
+        company_id: uuid.UUID | None,
         email: str,
         password_hash: str,
         full_name: str | None = None,
@@ -39,8 +40,15 @@ class UserRepository:
         Flushing assigns the primary key so the caller can use it immediately,
         while leaving the transaction open so the service can decide whether
         the whole unit of work succeeds.
+
+        `company_id` is required and has NO default, on purpose. A default here
+        would be a guess about which business a new person works for, made in
+        the one place that cannot possibly know. Passing None is legal for the
+        platform owner alone, and the database's check constraint is what holds
+        anybody else to it.
         """
         user = User(
+            company_id=company_id,
             email=self.normalize_email(email),
             password_hash=password_hash,
             full_name=full_name,
@@ -85,53 +93,94 @@ class UserRepository:
     async def list_users(
         self,
         *,
+        company_id: uuid.UUID,
         limit: int = 50,
         offset: int = 0,
         role: UserRole | None = None,
     ) -> list[User]:
-        stmt = select(User).order_by(User.created_at.desc())
+        """One company's directory. Never everybody's.
+
+        `company_id` is required and undefaulted throughout this repository.
+        A default would make "every user in the system" the behaviour a caller
+        gets by forgetting, and forgetting is the failure mode this whole
+        boundary exists to survive.
+        """
+        stmt = (
+            select(User)
+            .where(User.company_id == company_id)
+            .order_by(User.created_at.desc())
+        )
         if role is not None:
             stmt = stmt.where(User.role == role)
         return list(
             (await self.db.execute(stmt.limit(limit).offset(offset))).scalars().all()
         )
 
-    async def count(self, *, role: UserRole | None = None) -> int:
-        stmt = select(func.count()).select_from(User)
+    async def count(
+        self, *, company_id: uuid.UUID, role: UserRole | None = None
+    ) -> int:
+        """How many users this company has.
+
+        The "last administrator" guards are built on this, so an unscoped count
+        would let a company demote its only admin as long as SOME other company
+        still had one — locking them out of their own account management.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(User)
+            .where(User.company_id == company_id)
+        )
         if role is not None:
             stmt = stmt.where(User.role == role)
         return int((await self.db.execute(stmt)).scalar_one())
 
-    async def list_ids_by_role(self, *roles: UserRole) -> list[uuid.UUID]:
+    async def list_ids_by_role(
+        self, *roles: UserRole, company_id: uuid.UUID
+    ) -> list[uuid.UUID]:
         """Ids only — used to fan a notification out to every admin.
 
         Selecting the column rather than the entity avoids hydrating full User
         objects that are immediately discarded.
+
+        `company_id` is keyword-only and has no default, because the one thing
+        this must never do is answer "every admin" when it was asked "every
+        admin here". Without it, one company's failed extraction is announced
+        to another company's administrators, along with the file name.
         """
         stmt = select(User.id).where(
-            User.role.in_(roles), User.is_active.is_(True)
+            User.role.in_(roles),
+            User.is_active.is_(True),
+            User.company_id == company_id,
         )
         return list((await self.db.execute(stmt)).scalars().all())
 
-    async def count_by_role(self) -> dict[UserRole, int]:
+    async def count_by_role(self, *, company_id: uuid.UUID) -> dict[UserRole, int]:
         """One GROUP BY rather than three COUNTs.
 
         Roles with no users are absent from the result — the caller fills the
         gaps, because the repository should report what the database contains,
         not what the enum happens to define.
         """
-        stmt = select(User.role, func.count()).group_by(User.role)
+        stmt = (
+            select(User.role, func.count())
+            .where(User.company_id == company_id)
+            .group_by(User.role)
+        )
         return {role: int(total) for role, total in (await self.db.execute(stmt)).all()}
 
-    async def count_flags(self) -> tuple[int, int]:
+    async def count_flags(self, *, company_id: uuid.UUID) -> tuple[int, int]:
         """(active, verified) in a single round trip.
 
         FILTER is the Postgres way to do conditional aggregation; SUM(CASE...)
         would work too but reads worse and returns NULL on an empty table.
         """
-        stmt = select(
-            func.count().filter(User.is_active.is_(True)),
-            func.count().filter(User.is_verified.is_(True)),
-        ).select_from(User)
+        stmt = (
+            select(
+                func.count().filter(User.is_active.is_(True)),
+                func.count().filter(User.is_verified.is_(True)),
+            )
+            .select_from(User)
+            .where(User.company_id == company_id)
+        )
         active, verified = (await self.db.execute(stmt)).one()
         return int(active or 0), int(verified or 0)

@@ -1,6 +1,11 @@
 import api from "@/service/api";
 import type { ApiResponse, Paginated } from "@/types/api.type";
-import type { User, UserRole, UserStats } from "@/types/user.type";
+import type {
+  CreateUserInput,
+  User,
+  UserRole,
+  UserStats,
+} from "@/types/user.type";
 
 export interface ListUsersParams {
   page?: number;
@@ -16,6 +21,26 @@ export interface ListUsersParams {
  * controls, and the API refuses them regardless of what the UI did.
  */
 export const userService = {
+  /**
+   * Add somebody to your company. The only way an account is created.
+   *
+   * Public sign-up was removed when the system became multi-company: a form
+   * filled in by a stranger cannot say which business they belong to. The
+   * company comes from the caller's own session server-side, which is why
+   * nothing about it is sent from here.
+   */
+  create: async (data: CreateUserInput): Promise<User> => {
+    const response = await api.post<ApiResponse<User>>("/users", {
+      email: data.email,
+      password: data.password,
+      role: data.role,
+      // Omitted rather than sent as null when blank, so the backend applies
+      // its own default instead of storing an explicit null.
+      ...(data.full_name ? { full_name: data.full_name } : {}),
+    });
+    return response.data.data;
+  },
+
   list: async ({
     page = 1,
     pageSize = 20,

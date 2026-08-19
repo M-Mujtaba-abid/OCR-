@@ -6,7 +6,6 @@ import type {
   LoginInput,
   LogoutData,
   Permission,
-  RegisterInput,
   TokenData,
   User,
 } from "@/types/user.type";
@@ -19,22 +18,8 @@ import type {
  * the payload, not the wrapper.
  */
 export const authService = {
-  /**
-   * Create an account.
-   *
-   * Returns the created user only — the backend deliberately issues no tokens
-   * on register, so the caller sends the user to the login page.
-   */
-  register: async (data: RegisterInput): Promise<User> => {
-    const response = await api.post<ApiResponse<User>>("/auth/register", {
-      email: data.email,
-      password: data.password,
-      // Omit rather than send null when blank, so the backend applies its own
-      // default instead of storing an explicit null.
-      ...(data.full_name ? { full_name: data.full_name } : {}),
-    });
-    return response.data.data;
-  },
+  // No `register`. Accounts belong to a company, so they are created by an
+  // administrator of that company — `userService.create`, POST /users.
 
   /** Log in. Sets the HttpOnly refresh cookie as a side effect. */
   login: async (data: LoginInput): Promise<LoginData> => {

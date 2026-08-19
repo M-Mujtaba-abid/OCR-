@@ -31,7 +31,18 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Password is required"),
 });
 
-export const registerSchema = z
+/**
+ * An administrator adding somebody to their company.
+ *
+ * This is what the old public sign-up schema became, rather than a second copy
+ * of the same rules: the constraints are identical because the backend applies
+ * the same `UserCreate` to both, and only the person filling the form changed.
+ *
+ * There is no company field, and there should never be one. The company is
+ * taken from the administrator's own session on the server — a company sent
+ * from a browser is a company the caller chose.
+ */
+export const createUserSchema = z
   .object({
     full_name: z
       .string()
@@ -41,7 +52,10 @@ export const registerSchema = z
       .or(z.literal("")),
     email,
     password,
-    confirmPassword: z.string().min(1, "Please confirm your password"),
+    confirmPassword: z.string().min(1, "Please confirm the password"),
+    // `super_admin` is absent on purpose: it is not a rung on a company's
+    // ladder, and the API refuses it from this endpoint anyway.
+    role: z.enum(["member", "manager", "admin"]),
   })
   .refine((values) => values.password === values.confirmPassword, {
     message: "Passwords do not match",
@@ -49,4 +63,4 @@ export const registerSchema = z
   });
 
 export type LoginFormValues = z.infer<typeof loginSchema>;
-export type RegisterFormValues = z.infer<typeof registerSchema>;
+export type CreateUserFormValues = z.infer<typeof createUserSchema>;

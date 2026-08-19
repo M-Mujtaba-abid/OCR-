@@ -27,6 +27,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, UUIDPrimaryKeyMixin
+from app.models.company import CompanyScopedMixin
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -45,7 +46,7 @@ class NotificationType(str, enum.Enum):
     INVOICE_PUSHED = "invoice_pushed"
 
 
-class Notification(UUIDPrimaryKeyMixin, Base):
+class Notification(UUIDPrimaryKeyMixin, CompanyScopedMixin, Base):
     """No TimestampMixin: a notification is an immutable event. It is created
     and later marked read; `read_at` records that, so an `updated_at` would
     carry no information the row does not already have."""
@@ -57,8 +58,10 @@ class Notification(UUIDPrimaryKeyMixin, Base):
         Index("ix_notif_user_unread", "user_id", "is_read"),
         Index("ix_notif_match_history", "match_history_id"),
         Index("ix_notif_created", "created_at"),
+        Index("ix_notifications_company_id", "company_id"),
     )
 
+    # Superseded by `company_id` — see the note on MatchHistory.tenant_id.
     tenant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, default="default", server_default="default"
     )

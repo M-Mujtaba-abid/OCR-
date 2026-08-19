@@ -25,25 +25,29 @@ class NotificationRepository:
     async def create_many(
         self,
         *,
+        company_id: uuid.UUID,
         user_ids: list[uuid.UUID],
         type: NotificationType,
         title: str,
         message: str | None = None,
         match_history_id: uuid.UUID | None = None,
         batch_id: uuid.UUID | None = None,
-        tenant_id: str = "default",
     ) -> int:
         """Fan one event out to several recipients in a single flush.
 
         add_all rather than a loop of add+flush: notifying twenty admins should
         be one round trip, not twenty.
+
+        `company_id` has no default. Every other argument here describes the
+        event; this one decides who can ever see it, and a default would be a
+        guess at that.
         """
         if not user_ids:
             return 0
 
         rows = [
             Notification(
-                tenant_id=tenant_id,
+                company_id=company_id,
                 user_id=user_id,
                 type=type,
                 title=title,

@@ -319,6 +319,7 @@ async def _match(
             f"({verdict.confidence:.0f}% confidence)"
         ),
         match_history_id=invoice.id,
+        company_id=invoice.company_id,
         tenant_id=invoice.tenant_id,
     )
     await db.commit()
@@ -440,6 +441,7 @@ async def _record_no_match(
         title=f"No match for {invoice.file_name}",
         message=reasoning[:500],
         match_history_id=invoice.id,
+        company_id=invoice.company_id,
         tenant_id=invoice.tenant_id,
     )
     await db.commit()
@@ -510,6 +512,7 @@ async def confirm_match(
             title=f"{invoice.file_name} was matched",
             message=f"Matched to {order.name} — {order.partner_name}",
             match_history_id=invoice.id,
+            company_id=invoice.company_id,
             tenant_id=invoice.tenant_id,
         )
 
@@ -548,6 +551,7 @@ async def reject_invoice(
             title=f"{invoice.file_name} was rejected",
             message=reason[:500],
             match_history_id=invoice.id,
+            company_id=invoice.company_id,
             tenant_id=invoice.tenant_id,
         )
 

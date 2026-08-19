@@ -33,6 +33,18 @@ class UserRead(BaseModel):
 
 
 class UserCreate(BaseModel):
+    """Body for POST /users — an administrator adding somebody to their company.
+
+    There is deliberately no `company_id` field. The company is taken from the
+    authenticated administrator, so there is nothing a caller could send to put
+    an account somewhere other than their own company.
+
+    `super_admin` is accepted by the type and refused by the service: the enum
+    is shared with the rest of the API, and rejecting it where the rule lives
+    means the same answer whether the role arrives here or through a later
+    promotion.
+    """
+
     email: EmailStr
     password: str = Field(
         min_length=8,
@@ -44,6 +56,10 @@ class UserCreate(BaseModel):
         ),
     )
     full_name: str | None = Field(default=None, max_length=255)
+    role: UserRole = Field(
+        default=UserRole.MEMBER,
+        description="Defaults to member — the least privilege that is useful.",
+    )
 
 
 class UserUpdate(BaseModel):

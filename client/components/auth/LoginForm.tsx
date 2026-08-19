@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -92,14 +91,11 @@ export function LoginForm() {
         {login.isPending ? "Signing in…" : "Login"}
       </Button>
 
+      {/* No "create an account" link: accounts belong to a company, and only
+          an administrator of that company can add one. Pointing a stranger at
+          a form they cannot complete is worse than saying nothing. */}
       <p className="text-center text-sm text-slate-600 dark:text-slate-400">
-        Don&apos;t have an account?{" "}
-        <Link
-          href="/register"
-          className="font-medium text-slate-900 underline underline-offset-4 hover:text-slate-700 dark:text-white dark:hover:text-slate-300"
-        >
-          Create Account
-        </Link>
+        Need an account? Ask an administrator at your company to create one.
       </p>
     </form>
   );

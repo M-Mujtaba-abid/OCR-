@@ -296,6 +296,7 @@ async def create_po_for_invoice(
             title=f"{invoice.file_name} became a purchase order",
             message=f"{created.name} was created in Odoo as a draft.",
             match_history_id=invoice.id,
+            company_id=invoice.company_id,
             tenant_id=invoice.tenant_id,
         )
 

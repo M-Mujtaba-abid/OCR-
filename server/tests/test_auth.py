@@ -24,49 +24,24 @@ COOKIE = settings.AUTH_COOKIE_NAME
 # ---------------------------------------------------------------------------
 # Register
 # ---------------------------------------------------------------------------
-async def test_register_creates_user(client: AsyncClient, unique_email, password):
+async def test_there_is_no_public_registration(
+    client: AsyncClient, unique_email, password
+):
+    """The endpoint is GONE, not merely refusing.
+
+    Every account belongs to a company, and a sign-up form cannot say which
+    one — so accounts are created by an administrator of the company they join
+    (`POST /users`). This asserts the door is absent rather than closed, which
+    is the difference between a policy and a check somebody can relax.
+
+    The account-creation rules that used to live here are in
+    `tests/test_user_admin.py`.
+    """
     r = await client.post(
         "/api/v1/auth/register",
         json={"email": unique_email, "password": password, "full_name": "New User"},
     )
-    assert r.status_code == 201, r.text
-    body = r.json()
-    assert body["success"] is True
-    assert body["data"]["email"] == unique_email
-    # Self-registration must never grant privilege.
-    assert body["data"]["role"] == "member"
-    assert body["data"]["is_verified"] is False
-
-
-async def test_register_duplicate_email_conflicts(
-    client: AsyncClient, existing_user, password
-):
-    r = await client.post(
-        "/api/v1/auth/register",
-        json={"email": existing_user.email, "password": password},
-    )
-    assert r.status_code == 409
-    body = r.json()
-    assert body["success"] is False
-    assert body["error"]["code"] == "EMAIL_ALREADY_REGISTERED"
-
-
-async def test_register_email_is_case_insensitive(
-    client: AsyncClient, existing_user, password
-):
-    r = await client.post(
-        "/api/v1/auth/register",
-        json={"email": existing_user.email.upper(), "password": password},
-    )
-    assert r.status_code == 409
-
-
-async def test_register_rejects_short_password(client: AsyncClient, unique_email):
-    r = await client.post(
-        "/api/v1/auth/register", json={"email": unique_email, "password": "short"}
-    )
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert r.status_code == 404, r.text
 
 
 # ---------------------------------------------------------------------------

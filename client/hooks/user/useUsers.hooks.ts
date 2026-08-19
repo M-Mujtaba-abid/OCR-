@@ -16,7 +16,7 @@ import {
   type ListUsersParams,
 } from "@/service/userService/user.service";
 import type { Paginated } from "@/types/api.type";
-import type { User, UserRole } from "@/types/user.type";
+import type { CreateUserInput, User, UserRole } from "@/types/user.type";
 
 /**
  * Put an updated user back into every cached page that holds them.
@@ -56,6 +56,31 @@ export function useUserStats() {
   return useQuery({
     queryKey: queryKeys.users.stats,
     queryFn: () => userService.stats(),
+  });
+}
+
+/**
+ * Add somebody to your company.
+ *
+ * Invalidates the whole `users` prefix rather than patching a row in: a new
+ * account changes the table, the pagination and every stat card above it, and
+ * a hand-patched insert would have to guess which page the row belongs on
+ * under the current sort.
+ */
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: CreateUserInput) => userService.create(data),
+    onSuccess: (user) => {
+      toast.success(`${user.full_name?.trim() || user.email} can now sign in`);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.users.all });
+    },
+    onError: (error: ApiError) => {
+      // 409 is a taken email, 403 a role this admin may not grant. Both carry
+      // a message written for the person reading it.
+      toast.error(error.message || "Could not create that user");
+    },
   });
 }
 
