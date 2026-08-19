@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from app.services.odoo_service import OdooCredentials
+
 from app.core.exceptions import InvoiceNotReadyError, OverBilledError
 from app.schemas.extraction import ExtractedLineItem
 from app.schemas.invoice import AttachmentStatus, BillOutcome
@@ -124,18 +126,33 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
             attachment_status="attached" if attachment else "none",
         )
 
-    monkeypatch.setattr(bcs.odoo_service, "fetch_purchase_order", fake_fetch_po)
-    monkeypatch.setattr(bcs.odoo_service, "find_vendor_bills", fake_find_bills)
-    monkeypatch.setattr(bcs.odoo_service, "receive_purchase_order_lines", fake_receive)
     async def fake_attach(*, res_model: str, res_id: int, attachment: OdooAttachment):
         state["attached"] = (res_model, res_id, attachment.file_name)
         return "attached", 4242
 
-    monkeypatch.setattr(bcs.odoo_service, "create_vendor_bill", fake_create_bill)
-    # Stubbed even though the happy path does not reach it: the duplicate branch
-    # does, and an unstubbed one would try to reach the real Odoo from a unit
-    # test — and write to it if it answered.
-    monkeypatch.setattr(bcs.odoo_service, "attach_document", fake_attach)
+    class _FakeOdoo:
+        """ONE company's Odoo, faked at the method boundary.
+
+        `attach_document` is stubbed even though the happy path does not reach
+        it: the duplicate branch does, and an unstubbed one would try to reach
+        the real Odoo from a unit test — and write to it if it answered.
+        """
+
+        _credentials = OdooCredentials(
+            base_url="https://odoo.test", database="db", username="u", api_key="k"
+        )
+        fetch_purchase_order = staticmethod(fake_fetch_po)
+        find_vendor_bills = staticmethod(fake_find_bills)
+        receive_purchase_order_lines = staticmethod(fake_receive)
+        create_vendor_bill = staticmethod(fake_create_bill)
+        attach_document = staticmethod(fake_attach)
+
+    async def fake_resolve(_db: object, _invoice: object) -> _FakeOdoo:
+        return _FakeOdoo()
+
+    # The seam that replaced patching a module-level singleton: the code asks
+    # the invoice which company's Odoo to use, so the test answers that.
+    monkeypatch.setattr(bcs, "odoo_for_invoice", fake_resolve)
     monkeypatch.setattr(bcs, "MatchHistoryRepository", _FakeRepo)
     monkeypatch.setattr(bcs, "NotificationService", _FakeNotifier)
 

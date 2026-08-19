@@ -14,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
+    CompanySuspendedError,
     InactiveUserError,
     InsufficientPermissionError,
     InsufficientRoleError,
@@ -70,9 +71,27 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 async def get_current_active_user(user: CurrentUser) -> User:
-    """The dependency ordinary protected routes should use."""
+    """The dependency ordinary protected routes should use.
+
+    TWO gates, not one. A disabled account is stopped, and so is every account
+    in a suspended company — because suspending a company that leaves its
+    members able to read their own invoices has not suspended anything.
+
+    This is deliberately here rather than in `CurrentCompany`. Not every
+    protected route needs the company object, so a check that lived only there
+    would apply to some routes and not others, and which ones would depend on
+    whether a handler happened to need a company id.
+    """
     if not user.is_active:
         raise InactiveUserError()
+
+    # `company_id` is null only for the platform owner, who belongs to no
+    # company and therefore cannot be suspended by one.
+    if user.company_id is not None and (
+        user.company is None or not user.company.is_active
+    ):
+        raise CompanySuspendedError()
+
     return user
 
 
@@ -133,6 +152,23 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "invoice.approve",
         "invoice.delete",
         "system.admin",
+    },
+    # The platform owner. Read this grant as a DENY LIST — what is missing is
+    # the point, and it is missing deliberately.
+    #
+    # No `invoice.*`, no `user.read`, no `system.admin`. Somebody who creates
+    # companies has no business inside their payables, and "the platform owner
+    # can see everything" is how one forgotten filter becomes one company
+    # reading another's ledger. They create a company and its first
+    # administrator; from there the company runs itself.
+    #
+    # Two independent things enforce that. This grant, and `company_of()` —
+    # which raises for an account with no company, so even a permission granted
+    # here by mistake still cannot resolve a company to scope a query to.
+    UserRole.SUPER_ADMIN: {
+        "user.read.self",
+        "user.update.self",
+        "platform.admin",
     },
 }
 

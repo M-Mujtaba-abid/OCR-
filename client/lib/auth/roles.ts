@@ -11,8 +11,17 @@
 
 import type { Permission, User, UserRole } from "@/types/user.type";
 
-/** Least to most privileged. Used for `atLeast` comparisons. */
+/**
+ * Least to most privileged, WITHIN a company. Used for `atLeast` comparisons.
+ *
+ * `super_admin` ranks below member on purpose. It is not a bigger admin — it
+ * is an account outside the companies, with no access to any company's data at
+ * all. Ranking it highest would make every `atLeast` check silently grant the
+ * platform owner a company screen they are forbidden from loading, and the
+ * page would render controls whose every request 403s.
+ */
 const ROLE_RANK: Record<UserRole, number> = {
+  super_admin: -1,
   member: 0,
   manager: 1,
   admin: 2,
@@ -22,12 +31,14 @@ export const ROLE_LABEL: Record<UserRole, string> = {
   member: "Member",
   manager: "Manager",
   admin: "Administrator",
+  super_admin: "Platform Owner",
 };
 
 export const ROLE_DESCRIPTION: Record<UserRole, string> = {
   member: "Upload invoices and track your own submissions.",
   manager: "Review and approve invoices across the team.",
   admin: "Full access, including user management.",
+  super_admin: "Creates companies. No access to any company's invoices.",
 };
 
 /**
@@ -42,6 +53,9 @@ export const ROLE_HOME: Record<UserRole, string> = {
   member: "/dashboard",
   manager: "/dashboard",
   admin: "/admin",
+  // Its own destination, because the platform owner has no company dashboard
+  // to land on — /dashboard and /admin would both 403 for them.
+  super_admin: "/platform",
 };
 
 export function homePathFor(user: User | null | undefined): string {
@@ -50,6 +64,11 @@ export function homePathFor(user: User | null | undefined): string {
 
 export function isAdmin(user: User | null | undefined): boolean {
   return user?.role === "admin";
+}
+
+/** The platform owner — outside every company, not above them. */
+export function isPlatformOwner(user: User | null | undefined): boolean {
+  return user?.role === "super_admin";
 }
 
 export function atLeast(user: User | null | undefined, role: UserRole): boolean {
@@ -77,8 +96,16 @@ const NAV_LINKS: readonly NavLink[] = [
   { href: "/admin", label: "Admin", minRole: "admin" },
 ] as const;
 
+/** The platform owner's nav. Separate because it shares no link with the rest. */
+const PLATFORM_LINKS: readonly NavLink[] = [
+  { href: "/platform", label: "Companies", minRole: "super_admin" },
+] as const;
+
 export function navLinksFor(user: User | null | undefined): NavLink[] {
   if (!user) return [];
+  // Not a superset: the platform owner gets the platform's links INSTEAD of
+  // the company ones, because every company link would 403 for them.
+  if (isPlatformOwner(user)) return [...PLATFORM_LINKS];
   return NAV_LINKS.filter((link) => atLeast(user, link.minRole));
 }
 
@@ -95,6 +122,7 @@ export function navLinksFor(user: User | null | undefined): NavLink[] {
  */
 const ROUTE_MIN_ROLE: ReadonlyArray<readonly [string, UserRole]> = [
   ["/admin", "admin"],
+  ["/platform", "super_admin"],
 ] as const;
 
 /** Whether a user may view a path. Public and unlisted paths are allowed. */
@@ -105,7 +133,15 @@ export function canViewPath(
   const rule = ROUTE_MIN_ROLE.find(
     ([prefix]) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
-  return rule ? atLeast(user, rule[1]) : true;
+  if (!rule) {
+    // Unlisted paths are open to company accounts, but never to the platform
+    // owner: they have no company, so a company page would render controls
+    // whose every request 403s. /platform is matched by its own rule above.
+    return !isPlatformOwner(user);
+  }
+  // `/platform` is not a rank comparison — it is a different kind of account.
+  if (rule[1] === "super_admin") return isPlatformOwner(user);
+  return atLeast(user, rule[1]);
 }
 
 /* -------------------------------------------------------------------------

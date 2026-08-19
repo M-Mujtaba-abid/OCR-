@@ -57,7 +57,11 @@ from app.schemas.odoo import (
 )
 from app.services.matching_engine import normalise_vendor
 from app.services.notification_service import NotificationService
-from app.services.odoo_service import BILLABLE_PO_STATES, odoo_service
+from app.services.odoo_service import (
+    BILLABLE_PO_STATES,
+    OdooService,
+    odoo_for_invoice,
+)
 from app.services.source_document import read_source_document
 
 logger = get_logger(__name__)
@@ -259,23 +263,27 @@ def resolve_invoice_date(extracted: dt.date | None, today: dt.date) -> dt.date:
     return extracted or today
 
 
-def bill_url(bill_id: int | None) -> str:
-    """The Odoo deep link for a bill."""
-    base = settings.odoo_base_url
+def bill_url(base: str, bill_id: int | None) -> str:
+    """The Odoo deep link for a bill, in THIS company's Odoo.
+
+    The base URL is passed rather than read from settings: a link built from
+    the environment would send every company to whichever Odoo the process was
+    configured against, and the id would land on somebody else's bill or on
+    nothing at all.
+    """
     if not base or not bill_id:
         return ""
-    return BILL_URL_TEMPLATE.format(base=base, bill_id=bill_id)
+    return BILL_URL_TEMPLATE.format(base=base.rstrip("/"), bill_id=bill_id)
 
 
-def po_url(po_id: int | None) -> str:
-    """The Odoo deep link for a purchase order."""
-    base = settings.odoo_base_url
+def po_url(base: str, po_id: int | None) -> str:
+    """The Odoo deep link for a purchase order, in this company's Odoo."""
     if not base or not po_id:
         return ""
-    return PO_URL_TEMPLATE.format(base=base, po_id=po_id)
+    return PO_URL_TEMPLATE.format(base=base.rstrip("/"), po_id=po_id)
 
 
-def bill_history_item(invoice: MatchHistory) -> dict[str, Any]:
+def bill_history_item(invoice: MatchHistory, *, odoo_url: str) -> dict[str, Any]:
     """One history row, read back out of the audit blob this module wrote.
 
     Deliberately no Odoo call. A history of a hundred bills would be a hundred
@@ -321,11 +329,11 @@ def bill_history_item(invoice: MatchHistory) -> dict[str, Any]:
         "bill_ref": invoice.odoo_bill_ref or bill.get("vendor_ref"),
         "bill_amount": bill.get("amount_total"),
         "bill_date": billed_date,
-        "bill_url": bill_url(bill_id),
+        "bill_url": bill_url(odoo_url, bill_id),
         "attachment_status": bill.get("attachment"),
         "po_id": order_id,
         "po_name": bill.get("po_name") or invoice.matched_po_name,
-        "po_url": po_url(order_id),
+        "po_url": po_url(odoo_url, order_id),
         "receipt_name": bill.get("receipt"),
         "backorder_names": list(backorders) if isinstance(backorders, list) else [],
         "line_count": len(lines) if isinstance(lines, list) else 0,
@@ -339,13 +347,19 @@ def bill_history_item(invoice: MatchHistory) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Preview
 # ---------------------------------------------------------------------------
-async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
+async def build_bill_preview(
+    odoo: OdooService, invoice: MatchHistory
+) -> dict[str, Any]:
     """Everything the reviewer needs to approve a bill, and nothing more.
 
     A plain dict validated by the API schema at the boundary, the way
     `po_creator_service.build_preview` hands data upwards.
+
+    Takes the company's Odoo rather than reaching for a module-level one, so
+    the order this previews and the order it would later bill are read from the
+    same deployment.
     """
-    order = await _billable_order(invoice)
+    order = await _billable_order(odoo, invoice)
     extraction = InvoiceExtraction.model_validate(invoice.extracted_json)
     pairs, unmatched_nos = propose_mapping(extraction.items, order.lines)
 
@@ -355,7 +369,7 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
     duplicate: dict[str, Any] | None = None
     if ref and order.partner_id:
         found = classify_duplicate(
-            await odoo_service.find_vendor_bills(partner_id=order.partner_id, ref=ref)
+            await odoo.find_vendor_bills(partner_id=order.partner_id, ref=ref)
         )
         if found is not None:
             bill, outcome = found
@@ -437,11 +451,11 @@ async def build_bill_preview(invoice: MatchHistory) -> dict[str, Any]:
         "invoice_untaxed": extraction.untaxed_amount or None,
         "invoice_tax": extraction.tax_amount or None,
         "invoice_total": extraction.total_amount or None,
-        "odoo_url": settings.odoo_base_url,
+        "odoo_url": odoo._credentials.base_url,
     }
 
 
-async def _billable_order(invoice: MatchHistory):
+async def _billable_order(odoo: OdooService, invoice: MatchHistory):
     """The confirmed order, re-read from Odoo and checked it can carry a bill."""
     if not invoice.extracted_json:
         raise InvoiceNotReadyError("This invoice has not been read yet.")
@@ -455,7 +469,7 @@ async def _billable_order(invoice: MatchHistory):
             code="NO_CONFIRMED_PO",
         )
 
-    order = await odoo_service.fetch_purchase_order(po_id)
+    order = await odoo.fetch_purchase_order(po_id)
     if order is None:
         raise InvoiceNotReadyError(
             f"Purchase order {po_id} was not found in Odoo.", code="PO_NOT_FOUND"
@@ -521,7 +535,11 @@ async def create_bill_for_invoice(
             code="PO_MISMATCH",
         )
 
-    order = await _billable_order(invoice)
+    # Resolved from the invoice, so every Odoo call below — the duplicate
+    # search, the receipt, the bill itself — goes to the company that owns it.
+    odoo = await odoo_for_invoice(db, invoice)
+
+    order = await _billable_order(odoo, invoice)
     if not order.partner_id:
         raise InvoiceNotReadyError(
             f"{order.name} has no vendor in Odoo.", code="PARTNER_NOT_FOUND"
@@ -553,7 +571,7 @@ async def create_bill_for_invoice(
     # question and this is the true answer, with the id needed to act on it.
     if bill_ref:
         found = classify_duplicate(
-            await odoo_service.find_vendor_bills(
+            await odoo.find_vendor_bills(
                 partner_id=order.partner_id, ref=bill_ref
             )
         )
@@ -578,7 +596,7 @@ async def create_bill_for_invoice(
             if attach_document:
                 document = await read_source_document(invoice)
                 if document is not None:
-                    status, _ = await odoo_service.attach_document(
+                    status, _ = await odoo.attach_document(
                         res_model="account.move",
                         res_id=existing.id,
                         attachment=document,
@@ -612,11 +630,11 @@ async def create_bill_for_invoice(
     # ------------------------------------------------- the irreversible write
     receipt = None
     if receive_goods:
-        receipt = await odoo_service.receive_purchase_order_lines(
+        receipt = await odoo.receive_purchase_order_lines(
             po_id=order.id, quantities=quantities
         )
 
-    created = await odoo_service.create_vendor_bill(
+    created = await odoo.create_vendor_bill(
         po_id=order.id,
         quantities=quantities,
         vendor_ref=bill_ref,
@@ -686,7 +704,6 @@ async def create_bill_for_invoice(
             message=f"{created.display_name} was created against {order.name}.",
             match_history_id=invoice.id,
             company_id=invoice.company_id,
-            tenant_id=invoice.tenant_id,
         )
 
     await db.commit()

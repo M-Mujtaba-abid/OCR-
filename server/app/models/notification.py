@@ -61,11 +61,6 @@ class Notification(UUIDPrimaryKeyMixin, CompanyScopedMixin, Base):
         Index("ix_notifications_company_id", "company_id"),
     )
 
-    # Superseded by `company_id` — see the note on MatchHistory.tenant_id.
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, default="default", server_default="default"
-    )
-
     # CASCADE here, unlike match_history: a notification about a deleted user
     # has no recipient and therefore no meaning.
     user_id: Mapped[uuid.UUID] = mapped_column(

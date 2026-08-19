@@ -7,11 +7,11 @@ import uuid
 
 from fastapi import BackgroundTasks, UploadFile
 
-from app.core.exceptions import InvoiceNotReadyError
+from app.core.exceptions import AppError, InvoiceNotReadyError
 from app.lib.responses import ApiResponse, PaginatedData, PaginationMeta
+from app.models.company import Company
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
-from app.core.config import settings
 from app.schemas.invoice import (
     BillHistoryItem,
     BillOutcome,
@@ -46,6 +46,7 @@ from app.services.bill_creator_service import (
     create_bill_for_invoice,
 )
 from app.services.ocr_service import run_ocr_for_invoice
+from app.services.odoo_service import odoo_for, odoo_for_invoice
 from app.services.po_creator_service import build_preview, create_po_for_invoice
 
 
@@ -72,6 +73,7 @@ class InvoiceController:
         self,
         *,
         user: User,
+        company: Company,
         files: list[UploadFile],
         member_ref_no: str | None,
         member_notes: str | None,
@@ -79,6 +81,7 @@ class InvoiceController:
     ) -> ApiResponse[UploadResult]:
         created, rejected = await self.service.upload_invoices(
             user=user,
+            company=company,
             files=files,
             member_ref_no=member_ref_no,
             member_notes=member_notes,
@@ -121,9 +124,23 @@ class InvoiceController:
             message="Invoices retrieved",
         )
 
+    async def _odoo_url(self, company_id: uuid.UUID) -> str:
+        """This company's Odoo base URL, for building deep links.
+
+        Never raises: a company with no Odoo configured still has a bill
+        history to read, and an empty string is what tells the client to render
+        the reference without a link rather than a link that goes nowhere.
+        """
+        try:
+            odoo = await odoo_for(self.service.db, company_id)
+        except AppError:
+            return ""
+        return odoo._credentials.base_url
+
     async def list_all(
         self,
         *,
+        company_id: uuid.UUID,
         page: int,
         page_size: int,
         status: InvoiceStatus | None,
@@ -131,6 +148,7 @@ class InvoiceController:
         uploaded_by: uuid.UUID | None,
     ) -> ApiResponse[PaginatedData[InvoiceListItem]]:
         items, total = await self.service.list_all(
+            company_id=company_id,
             page=page,
             page_size=page_size,
             status=status,
@@ -148,7 +166,12 @@ class InvoiceController:
         )
 
     async def bill_history(
-        self, *, page: int, page_size: int, uploaded_by: uuid.UUID | None
+        self,
+        *,
+        company_id: uuid.UUID,
+        page: int,
+        page_size: int,
+        uploaded_by: uuid.UUID | None,
     ) -> ApiResponse[PaginatedData[BillHistoryItem]]:
         """Every bill this system raised, newest first.
 
@@ -159,12 +182,23 @@ class InvoiceController:
         second copy to forget.
         """
         items, total = await self.service.list_billed(
-            page=page, page_size=page_size, uploaded_by=uploaded_by
+            company_id=company_id,
+            page=page,
+            page_size=page_size,
+            uploaded_by=uploaded_by,
         )
+        # Resolved ONCE for the page, not per row: every invoice here belongs
+        # to the same company by construction, and the alternative is a
+        # credential lookup for each of twenty rows.
+        odoo_url = await self._odoo_url(company_id)
+
         return ApiResponse.ok(
             PaginatedData[BillHistoryItem](
                 items=[
-                    BillHistoryItem.model_validate(bill_history_item(i)) for i in items
+                    BillHistoryItem.model_validate(
+                        bill_history_item(i, odoo_url=odoo_url)
+                    )
+                    for i in items
                 ],
                 pagination=_meta(page, page_size, total),
             ),
@@ -202,10 +236,11 @@ class InvoiceController:
         )
 
     async def stats(
-        self, *, user: User | None
+        self, *, company_id: uuid.UUID, user: User | None
     ) -> ApiResponse[InvoiceStats]:
         return ApiResponse.ok(
-            await self.service.get_stats(user=user), message="Stats retrieved"
+            await self.service.get_stats(company_id=company_id, user=user),
+            message="Stats retrieved",
         )
 
     async def delete(
@@ -345,22 +380,26 @@ class InvoiceController:
         )
 
     async def upload_tickets(
-        self, *, payload: UploadTicketsRequest
+        self, *, company: Company, payload: UploadTicketsRequest
     ) -> ApiResponse[list[UploadTicket]]:
         """Signed URLs the browser uploads to directly."""
         return ApiResponse.ok(
-            await self.service.issue_upload_tickets(files=payload.files)
+            await self.service.issue_upload_tickets(
+                company=company, files=payload.files
+            )
         )
 
     async def register_uploads(
         self,
         *,
         user: User,
+        company: Company,
         payload: RegisterUploadsRequest,
         background: BackgroundTasks,
     ) -> ApiResponse[UploadResult]:
         created, rejected = await self.service.register_uploads(
             user=user,
+            company=company,
             files=payload.files,
             member_ref_no=payload.member_ref_no,
             member_notes=payload.member_notes,
@@ -376,8 +415,12 @@ class InvoiceController:
             message=f"{len(created)} invoice(s) uploaded",
         )
 
-    async def trend(self, *, days: int) -> ApiResponse[InvoiceTrend]:
-        return ApiResponse.ok(await self.service.trend(days=days))
+    async def trend(
+        self, *, company_id: uuid.UUID, days: int
+    ) -> ApiResponse[InvoiceTrend]:
+        return ApiResponse.ok(
+            await self.service.trend(company_id=company_id, days=days)
+        )
 
     async def po_preview(
         self, *, invoice_id: uuid.UUID, user: User
@@ -386,9 +429,14 @@ class InvoiceController:
         invoice = await self.service.get_for_user(
             invoice_id=invoice_id, user=user, can_read_all=True
         )
-        preview = await build_preview(invoice)
+        odoo = await odoo_for_invoice(self.service.db, invoice)
+        preview = await build_preview(odoo, invoice)
+        # The company's own Odoo URL, so the deep links on the screen point at
+        # the deployment the preview was actually read from.
         return ApiResponse.ok(
-            PoPreview.model_validate({**preview, "odoo_url": settings.odoo_base_url})
+            PoPreview.model_validate(
+                {**preview, "odoo_url": odoo._credentials.base_url}
+            )
         )
 
     async def create_po(
@@ -417,8 +465,9 @@ class InvoiceController:
         invoice = await self.service.get_for_user(
             invoice_id=invoice_id, user=user, can_read_all=True
         )
+        odoo = await odoo_for_invoice(self.service.db, invoice)
         return ApiResponse.ok(
-            BillPreview.model_validate(await build_bill_preview(invoice))
+            BillPreview.model_validate(await build_bill_preview(odoo, invoice))
         )
 
     async def create_bill(
@@ -453,7 +502,10 @@ class InvoiceController:
             CreateBillResult.model_validate(
                 {
                     **outcome,
-                    "bill_url": bill_url(outcome.get("bill_id")),
+                    "bill_url": bill_url(
+                        await self._odoo_url(invoice.company_id),
+                        outcome.get("bill_id"),
+                    ),
                     "invoice": InvoiceDetail.model_validate(updated),
                 }
             ),

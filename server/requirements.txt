@@ -34,6 +34,12 @@ alembic==1.19.1
 # pwdlib over passlib: passlib 1.7.4 is unmaintained and breaks on new Python
 # and bcrypt releases. pwdlib is what FastAPI's own docs now recommend.
 pwdlib[argon2]==0.3.1
+
+# Fernet, for the per-company Odoo credentials held in the database. Passwords
+# are hashed and never recovered; an ERP API key has to be REPLAYED to Odoo on
+# every call, so it must be reversible — which makes encryption the tool, and
+# makes where the key lives the whole of the security.
+cryptography==46.0.3
 # PyJWT only. Never add python-jose alongside it — two JWT libraries in one
 # project means two validation code paths and eventually one that is wrong.
 PyJWT==2.13.0

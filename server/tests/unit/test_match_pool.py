@@ -68,41 +68,41 @@ def fetches(monkeypatch: pytest.MonkeyPatch):
         calls["billed_called"] = True
         return list(billed_orders)
 
-    monkeypatch.setattr(
-        match_service.odoo_service, "fetch_open_purchase_orders", fake_open
-    )
-    monkeypatch.setattr(
-        match_service.odoo_service, "fetch_recently_billed_orders", fake_billed
-    )
-    return calls, open_orders, billed_orders
+    # One company's Odoo, handed to `_orders_to_consider` the way the real
+    # code hands it: resolved from the invoice, never reached for globally.
+    class _FakeOdoo:
+        fetch_open_purchase_orders = staticmethod(fake_open)
+        fetch_recently_billed_orders = staticmethod(fake_billed)
+
+    return _FakeOdoo(), calls, open_orders, billed_orders
 
 
 class TestOrdersToConsider:
     @pytest.mark.asyncio
     async def test_already_billed_orders_are_scored_too(self, fetches) -> None:
         """The whole point: a billed order must reach the scoring pass."""
-        _, _, _ = fetches
-        orders = await match_service._orders_to_consider(make_invoice())
+        odoo, _, _, _ = fetches
+        orders = await match_service._orders_to_consider(odoo, make_invoice())
 
         assert [o.name for o in orders] == ["P01650", "P01642"]
 
     @pytest.mark.asyncio
     async def test_an_order_in_both_fetches_appears_once(self, fetches) -> None:
         """Overlapping windows must not double a candidate in the shortlist."""
-        _, open_orders, _ = fetches
+        odoo, _, open_orders, _ = fetches
         open_orders.append(make_order(1642, "P01642", "invoiced"))
 
-        orders = await match_service._orders_to_consider(make_invoice())
+        orders = await match_service._orders_to_consider(odoo, make_invoice())
 
         assert [o.id for o in orders] == [1650, 1642]
 
     @pytest.mark.asyncio
     async def test_the_window_is_anchored_to_the_invoice_date(self, fetches) -> None:
         """An invoice dated months ago must look back from its own date."""
-        calls, _, _ = fetches
+        odoo, calls, _, _ = fetches
         lookback = settings.MATCH_CLOSED_LOOKBACK_DAYS
 
-        await match_service._orders_to_consider(make_invoice("2026-07-22"))
+        await match_service._orders_to_consider(odoo, make_invoice("2026-07-22"))
 
         assert calls["billed_since"] == dt.date(2026, 7, 22) - dt.timedelta(
             days=lookback
@@ -111,9 +111,9 @@ class TestOrdersToConsider:
     @pytest.mark.asyncio
     async def test_an_undated_invoice_still_sweeps(self, fetches) -> None:
         """No date on the document is not a reason to see fewer orders."""
-        calls, _, _ = fetches
+        odoo, calls, _, _ = fetches
 
-        orders = await match_service._orders_to_consider(make_invoice(None))
+        orders = await match_service._orders_to_consider(odoo, make_invoice(None))
 
         assert calls["billed_called"] is True
         assert [o.name for o in orders] == ["P01650", "P01642"]
@@ -123,10 +123,10 @@ class TestOrdersToConsider:
         self, fetches, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A deployment that wants strictly billable orders can have that."""
-        calls, _, _ = fetches
+        odoo, calls, _, _ = fetches
         monkeypatch.setattr(settings, "MATCH_CLOSED_LOOKBACK_DAYS", 0)
 
-        orders = await match_service._orders_to_consider(make_invoice())
+        orders = await match_service._orders_to_consider(odoo, make_invoice())
 
         assert calls["billed_called"] is False
         assert [o.name for o in orders] == ["P01650"]

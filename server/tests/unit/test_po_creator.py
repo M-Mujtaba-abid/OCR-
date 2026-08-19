@@ -51,10 +51,29 @@ def _rows(pool: list[str], names: list[str]) -> list[dict[str, Any]]:
     return [{"id": pool.index(name) + 1, "display_name": name} for name in names]
 
 
+class _FakeOdoo:
+    """Stands in for ONE company's OdooService.
+
+    An object rather than a set of patched module functions, because that is
+    what the code now takes: every po_creator entry point is handed the Odoo it
+    should talk to, so a test that wants to control Odoo hands it one.
+
+    Subscriptable so the creation tests can still read the payload that was
+    sent — `odoo["order_lines"]` is what `create_draft_purchase_order` received.
+    """
+
+    def __init__(self) -> None:
+        self.created: dict[str, Any] = {}
+
+    def __getitem__(self, key: str) -> Any:
+        return self.created[key]
+
+
 @pytest.fixture
 def odoo(monkeypatch: pytest.MonkeyPatch):
     """Stub the two searches; record what was created."""
-    created: dict[str, Any] = {}
+    fake = _FakeOdoo()
+    created = fake.created
 
     async def fake_search(model: str, tokens: list[str], **_: Any) -> list[dict[str, Any]]:
         if not tokens:
@@ -87,19 +106,28 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
             content=bytes.fromhex("ffd8ff") + b" scan",
         )
 
-    monkeypatch.setattr(poc.odoo_service, "search_by_tokens", fake_search)
-    monkeypatch.setattr(poc.odoo_service, "read_names", fake_read_names)
-    monkeypatch.setattr(poc.odoo_service, "create_draft_purchase_order", fake_create)
+    fake.search_by_tokens = fake_search  # type: ignore[attr-defined]
+    fake.read_names = fake_read_names  # type: ignore[attr-defined]
+    fake.create_draft_purchase_order = fake_create  # type: ignore[attr-defined]
+
+    async def fake_resolve(_db: Any, _invoice: Any) -> _FakeOdoo:
+        return fake
+
+    # `create_po_for_invoice` resolves its own company's Odoo from the invoice.
+    # This is the seam that replaces patching a module-level singleton, and it
+    # is a truer stub: the test now supplies the company's connection rather
+    # than overwriting a global everybody shared.
+    monkeypatch.setattr(poc, "odoo_for_invoice", fake_resolve)
     # Stubbed, or every test in this file reaches for object storage.
     monkeypatch.setattr(poc, "read_source_document", fake_document)
-    return created
+    return fake
 
 
 class TestVendorResolution:
     @pytest.mark.asyncio
     async def test_a_spaced_initialism_resolves(self, odoo) -> None:
         """Odoo writes "A J K", the vendor's paper writes "AJK"."""
-        match = await poc.resolve_vendor("AJK Restaurants")
+        match = await poc.resolve_vendor(odoo, "AJK Restaurants")
 
         assert match is not None
         assert match.name == "A J K Restaurants Management Llc"
@@ -107,7 +135,7 @@ class TestVendorResolution:
     @pytest.mark.asyncio
     async def test_an_ocr_mangling_resolves_to_nothing(self, odoo) -> None:
         """"Retardant" for "Restaurants" — measured at 32, must not be guessed."""
-        assert await poc.resolve_vendor("AJK Retardant") is None
+        assert await poc.resolve_vendor(odoo, "AJK Retardant") is None
 
     @pytest.mark.asyncio
     async def test_a_close_runner_up_blocks_resolution(self, odoo) -> None:
@@ -117,11 +145,11 @@ class TestVendorResolution:
         raising none, so this refuses rather than picking the top of a photo
         finish.
         """
-        assert await poc.resolve_vendor("Restaurants Management Llc") is None
+        assert await poc.resolve_vendor(odoo, "Restaurants Management Llc") is None
 
     @pytest.mark.asyncio
     async def test_an_unmistakable_vendor_resolves(self, odoo) -> None:
-        match = await poc.resolve_vendor("Berry Mount Vegetables And Fruit Trading")
+        match = await poc.resolve_vendor(odoo, "Berry Mount Vegetables And Fruit Trading")
 
         assert match is not None
         assert match.id == 4
@@ -136,7 +164,7 @@ class TestProductCandidates:
         wrong product — while the right one ranks third. No threshold catches
         that, so the reviewer is asked.
         """
-        candidates = await poc.product_candidates("Egg Plant (C. Int.)")
+        candidates = await poc.product_candidates(odoo, "Egg Plant (C. Int.)")
 
         assert candidates  # options are offered
         assert poc._preselect(candidates) is None
@@ -144,7 +172,7 @@ class TestProductCandidates:
     @pytest.mark.asyncio
     async def test_a_three_way_tie_is_never_preselected(self, odoo) -> None:
         """Lemon, Sanitized lemon and Lemon Leaves score alike."""
-        candidates = await poc.product_candidates("J5 (lemon)")
+        candidates = await poc.product_candidates(odoo, "J5 (lemon)")
 
         assert len(candidates) >= 3
         assert poc._preselect(candidates) is None
@@ -152,14 +180,14 @@ class TestProductCandidates:
     @pytest.mark.asyncio
     async def test_an_unmistakable_product_is_preselected(self, odoo) -> None:
         """100 against a distant runner-up — confirming, not choosing."""
-        candidates = await poc.product_candidates("Assorted Flower")
+        candidates = await poc.product_candidates(odoo, "Assorted Flower")
 
         assert poc._preselect(candidates) == candidates[0].id
         assert candidates[0].name.startswith("ASSORTED FLOWER")
 
     @pytest.mark.asyncio
     async def test_candidates_are_capped(self, odoo) -> None:
-        candidates = await poc.product_candidates("lemon egg plant flower")
+        candidates = await poc.product_candidates(odoo, "lemon egg plant flower")
 
         assert len(candidates) <= poc.PRODUCT_CANDIDATES
 

@@ -222,21 +222,31 @@ def build_object_key(
     folder: str,
     filename: str,
     *,
-    tenant_id: str = "default",
+    company_slug: str,
     now: dt.datetime | None = None,
 ) -> str:
-    """``{folder}/{tenant_id}/{YYYY-MM}/{uuid}_{filename}``.
+    """``{folder}/{company_slug}/{YYYY-MM}/{uuid}_{filename}``.
 
-    Tenant first inside the folder so a whole tenant can be listed, exported or
-    deleted with a single prefix operation. The month partition keeps any one
+    Company first inside the folder, so one company's files can be listed,
+    exported or deleted with a single prefix operation — and so that prefix is
+    what separates them in the first place. The month partition keeps any one
     prefix from growing without bound, which matters for listing performance and
     for lifecycle rules. The UUID guarantees two members uploading
     ``invoice.pdf`` in the same month cannot overwrite each other — object
     storage has no "file already exists" error, a PUT just silently replaces.
+
+    `company_slug` has no default. It used to default to "default", which put
+    every company's objects in one prefix — and that prefix is what the upload
+    registration checks a key against, so the default quietly disabled the
+    check as well as the separation.
+
+    The substitution below is belt and braces: slugs are already constrained to
+    safe characters where companies are created, and a key segment must never
+    be able to contain a slash whatever slipped through.
     """
     stamp = (now or dt.datetime.now(dt.UTC)).strftime("%Y-%m")
-    safe_tenant = _UNSAFE_CHARS.sub("_", tenant_id) or "default"
-    return f"{folder.strip('/')}/{safe_tenant}/{stamp}/{uuid.uuid4().hex}_{filename}"
+    safe_slug = _UNSAFE_CHARS.sub("_", company_slug) or "unknown"
+    return f"{folder.strip('/')}/{safe_slug}/{stamp}/{uuid.uuid4().hex}_{filename}"
 
 
 def sniff_mime_type(head: bytes) -> str | None:
@@ -318,7 +328,7 @@ async def upload_file(
     file: UploadFile,
     folder: str,
     *,
-    tenant_id: str = "default",
+    company_slug: str,
 ) -> StorageResult:
     """Validate and store an upload. Raises, never returns a partial result.
 
@@ -329,7 +339,7 @@ async def upload_file(
     """
     body, mime_type = await _read_and_validate(file)
     original_name = sanitize_filename(file.filename, fallback_mime=mime_type)
-    key = build_object_key(folder, original_name, tenant_id=tenant_id)
+    key = build_object_key(folder, original_name, company_slug=company_slug)
 
     try:
         await anyio.to_thread.run_sync(

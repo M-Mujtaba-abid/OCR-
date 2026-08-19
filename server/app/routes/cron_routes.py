@@ -70,6 +70,18 @@ async def sweep(
     This is the "Re-read document" / "Re-run matching" button an admin would
     press, automated — the same entry points, so a swept invoice takes exactly
     the path a manual retry would.
+
+    DELIBERATELY CROSS-COMPANY, and the only endpoint that is. There is no
+    caller to scope it to: the request comes from a scheduler holding a shared
+    secret, not from a person in a company, and a stalled invoice in one
+    company must not stay stalled because nobody in another triggered a sweep.
+
+    That is safe because the sweep never READS anything company-specific. It
+    selects rows by status and age, then hands each one's id to the same task a
+    manual retry would use — and that task loads the invoice itself and takes
+    its company from the row. So every re-queued invoice carries its own
+    company with it, one at a time, and no company context is ever shared
+    between two of them or inherited from the process.
     """
     _authorise(authorization)
 
@@ -95,9 +107,12 @@ async def sweep(
         else:
             background.add_task(run_ocr_for_invoice, invoice.id)
         requeued += 1
+        # The company is logged, not passed: the task re-reads it from the row.
+        # It is here so a sweep can be audited per company after the fact.
         logger.warning(
-            "Sweeping invoice %s: stuck in %s since %s",
+            "Sweeping invoice %s (company %s): stuck in %s since %s",
             invoice.id,
+            invoice.company_id,
             invoice.status.value,
             invoice.updated_at,
         )

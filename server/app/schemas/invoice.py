@@ -81,7 +81,11 @@ class InvoiceDetail(InvoiceListItem):
     """Everything except the raw OCR blob, which is fetched separately when
     somebody actually wants to debug an extraction."""
 
-    tenant_id: str
+    #: Which company owns this invoice. Every request is already scoped to the
+    #: caller's company, so this can only ever be their own — it is here for
+    #: support and for a client that caches across accounts, not as a filter
+    #: anybody is expected to apply.
+    company_id: uuid.UUID
     member_notes: str | None = None
     batch_id: uuid.UUID | None = None
 

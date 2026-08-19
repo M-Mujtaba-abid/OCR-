@@ -39,11 +39,6 @@ class ProcessingBatch(UUIDPrimaryKeyMixin, CompanyScopedMixin, TimestampMixin, B
         Index("ix_processing_batches_company_id", "company_id"),
     )
 
-    # Superseded by `company_id` — see the note on MatchHistory.tenant_id.
-    tenant_id: Mapped[str] = mapped_column(
-        String(64), nullable=False, default="default", server_default="default"
-    )
-
     started_by: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id"), nullable=False
     )

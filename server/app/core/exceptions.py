@@ -141,6 +141,22 @@ class UserNotFoundError(NotFoundError):
     message = "User not found."
 
 
+class CompanySuspendedError(ForbiddenError):
+    """The caller's company is switched off, so nobody in it may do anything.
+
+    One flag stops every account in a company at once, without deleting a row
+    or touching a password — which is what makes it usable for a billing lapse
+    or an offboarding, both of which are usually reversed.
+
+    Checked in `get_current_active_user` beside the account's own `is_active`,
+    so it applies to every protected route rather than only the ones that
+    happen to need a company object.
+    """
+
+    code = "COMPANY_SUSPENDED"
+    message = "This company's access has been suspended."
+
+
 # There is no "sign-up needs a company" error, because there is no sign-up.
 # Public registration was removed rather than conditioned: an account is created
 # by an administrator of the company it joins, and the company comes from that

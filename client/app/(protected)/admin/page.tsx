@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { OdooSettingsPanel } from "@/components/admin/OdooSettingsPanel";
 import { UsersPanel } from "@/components/admin/UsersPanel";
 import { PipelineBar } from "@/components/charts/PipelineBar";
 import { StatusBreakdown } from "@/components/charts/StatusBreakdown";
@@ -12,6 +13,7 @@ import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
 import { TabPanel, Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
+import { useCompany } from "@/hooks/company/useCompany.hooks";
 import {
   useAdminInvoiceStats,
   useInvoiceTrend,
@@ -20,13 +22,14 @@ import { useUserStats } from "@/hooks/user/useUsers.hooks";
 import { ROLE_LABEL } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/user.type";
 
-type TabId = "overview" | "invoices" | "users" | "history";
+type TabId = "overview" | "invoices" | "users" | "history" | "settings";
 
 /** Least to most privileged, so the shape of the org reads top to bottom. */
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
 
 export default function AdminPage() {
   const { user } = useAuth();
+  const company = useCompany();
   const [tab, setTab] = useState<TabId>("overview");
 
   // Two independent queries rather than one combined fetch: they invalidate on
@@ -49,17 +52,20 @@ export default function AdminPage() {
     { id: "invoices", label: "Invoices", badge: invoiceStats?.total },
     { id: "users", label: "Users", badge: userStats?.total },
     { id: "history", label: "History", badge: billed },
+    { id: "settings", label: "Settings" },
   ];
 
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
+          {/* The company leads, because on a platform running several of them
+              the first question a queue has to answer is whose it is. */}
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">
-            Admin Insights
+            {company.data?.name ?? "Admin Insights"}
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            {user.email}
+            {company.data ? `Admin insights · ${user.email}` : user.email}
           </p>
         </div>
         <Badge tone="accent">{ROLE_LABEL.admin}</Badge>
@@ -174,6 +180,10 @@ export default function AdminPage() {
 
         <TabPanel id="history" active={tab === "history"}>
           <BillHistoryPanel />
+        </TabPanel>
+
+        <TabPanel id="settings" active={tab === "settings"}>
+          <OdooSettingsPanel />
         </TabPanel>
       </div>
     </div>

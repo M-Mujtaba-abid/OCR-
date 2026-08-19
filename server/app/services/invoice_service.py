@@ -31,6 +31,7 @@ from app.models.match_history import (
     InvoiceStatus,
     MatchHistory,
 )
+from app.models.company import Company
 from app.models.notification import NotificationType
 from app.models.user import User, UserRole
 from app.repositories.match_history_repository import MatchHistoryRepository
@@ -65,10 +66,10 @@ class InvoiceService:
         self,
         *,
         user: User,
+        company: Company,
         files: list[UploadFile],
         member_ref_no: str | None = None,
         member_notes: str | None = None,
-        tenant_id: str = "default",
     ) -> tuple[list[MatchHistory], list[UploadRejection]]:
         """Store 1..N invoices and queue them for an admin.
 
@@ -100,10 +101,10 @@ class InvoiceService:
             )
 
         stored_keys: list[str] = []
-        # Whose invoices these are, taken from the uploader rather than from
-        # anything in the request. Resolved before the first byte is stored, so
-        # an account with no company fails here instead of after the upload.
-        company_id = company_of(user)
+        # Whose invoices these are. The company was resolved from the caller's
+        # own session before this method was reached; its id goes on every row
+        # and its slug into every object key, so the two can never disagree.
+        company_id = company.id
 
         created: list[MatchHistory] = []
         rejected: list[UploadRejection] = []
@@ -113,7 +114,7 @@ class InvoiceService:
             display_name = upload.filename or "unnamed"
             try:
                 return await storage.upload_file(
-                    upload, INVOICE_FOLDER, tenant_id=tenant_id
+                    upload, INVOICE_FOLDER, company_slug=company.slug
                 )
             except AppError as exc:
                 # Only a CLIENT fault is a per-file rejection: a corrupt PDF
@@ -161,7 +162,6 @@ class InvoiceService:
                     rows.append(
                         {
                             "company_id": company_id,
-                            "tenant_id": tenant_id,
                             # The relationship, not just the id: it is the
                             # object already loaded in this session, so setting
                             # it saves a SELECT per invoice that the response
@@ -208,7 +208,6 @@ class InvoiceService:
                 # opens the queue rather than one specific row.
                 match_history_id=created[0].id if len(created) == 1 else None,
                 company_id=company_id,
-                tenant_id=tenant_id,
             )
 
             await self.db.commit()
@@ -239,8 +238,8 @@ class InvoiceService:
     async def issue_upload_tickets(
         self,
         *,
+        company: Company,
         files: Sequence[UploadTicketRequest],
-        tenant_id: str = "default",
     ) -> list[UploadTicket]:
         """Signed URLs the browser PUTs its files to, bypassing this API.
 
@@ -250,7 +249,9 @@ class InvoiceService:
         The key is built with the same `sanitize_filename` + `build_object_key`
         the server-side path used, and is generated HERE rather than accepted
         from the caller — a client that chose its own key could write into
-        another tenant's prefix.
+        another company's prefix. The company segment comes from the caller's
+        session, so the URL that gets signed can only ever point inside their
+        own prefix.
         """
         if len(files) > settings.MAX_FILES_PER_UPLOAD:
             raise BadRequestError(
@@ -270,7 +271,9 @@ class InvoiceService:
             name = storage.sanitize_filename(
                 requested.file_name, fallback_mime=requested.content_type
             )
-            key = storage.build_object_key(INVOICE_FOLDER, name, tenant_id=tenant_id)
+            key = storage.build_object_key(
+                INVOICE_FOLDER, name, company_slug=company.slug
+            )
             tickets.append(
                 UploadTicket(
                     key=key,
@@ -287,10 +290,10 @@ class InvoiceService:
         self,
         *,
         user: User,
+        company: Company,
         files: Sequence[RegisterUploadRequest],
         member_ref_no: str | None = None,
         member_notes: str | None = None,
-        tenant_id: str = "default",
     ) -> tuple[list[MatchHistory], list[UploadRejection]]:
         """Turn finished uploads into invoice rows.
 
@@ -310,29 +313,31 @@ class InvoiceService:
                 code="TOO_MANY_FILES",
             )
 
-        company_id = company_of(user)
+        company_id = company.id
 
         created: list[MatchHistory] = []
         rejected: list[UploadRejection] = []
 
-        # The one line standing between a crafted key and another company's
-        # objects: a registered key must sit under the prefix this caller was
-        # issued. It is built from `tenant_id` and NOT from anything in the
-        # request, which is what makes it a boundary rather than a formality.
+        # THE security boundary of the direct-upload path.
         #
-        # `tenant_id` is still the literal "default" for every caller, so today
-        # this separates nobody — it starts doing real work the moment the
-        # prefix becomes the caller's own company slug, which is where the
-        # storage half of this migration lands.
-        prefix = f"{INVOICE_FOLDER}/{tenant_id}/"
+        # The browser PUTs its bytes straight to storage and then tells us the
+        # key. A registered key must therefore sit under the prefix this caller
+        # was actually issued, or a crafted one would attach another company's
+        # object — already uploaded, already private — to an invoice row in
+        # this company, and the file endpoint would happily sign a URL for it.
+        #
+        # Built from the session's own company slug. Nothing from the request
+        # contributes to it, which is what makes it a boundary rather than a
+        # formality.
+        prefix = f"{INVOICE_FOLDER}/{company.slug}/"
 
         async def inspect(
             entry: RegisterUploadRequest,
         ) -> storage.StoredObject | UploadRejection:
             """One object's probe. Never raises for a client fault."""
             if not entry.key.startswith(prefix):
-                # The key was not one this tenant was issued. Nothing to do but
-                # refuse — and say so plainly rather than 500.
+                # The key was not one this company was issued. Nothing to do
+                # but refuse — and say so plainly rather than 500.
                 return UploadRejection(
                     file_name=entry.file_name,
                     reason="That upload does not belong to this account.",
@@ -368,7 +373,6 @@ class InvoiceService:
                     rows.append(
                         {
                             "company_id": company_id,
-                            "tenant_id": tenant_id,
                             # The loaded User, not the bare id — see the note in
                             # `upload_invoices`. Saves one SELECT per invoice.
                             "uploader": user,
@@ -411,7 +415,6 @@ class InvoiceService:
                 ),
                 match_history_id=created[0].id if len(created) == 1 else None,
                 company_id=company_id,
-                tenant_id=tenant_id,
             )
             await self.db.commit()
 
@@ -523,18 +526,18 @@ class InvoiceService:
     async def list_all(
         self,
         *,
+        company_id: uuid.UUID,
         page: int = 1,
         page_size: int = 20,
         status: InvoiceStatus | None = None,
         open_only: bool = False,
         uploaded_by: uuid.UUID | None = None,
-        tenant_id: str = "default",
     ) -> tuple[list[MatchHistory], int]:
         # One statement. The total also now honours `uploaded_by`, which the
         # separate count did not — filtering the queue by uploader used to
         # paginate against everybody's total.
         return await self.invoices.list_all(
-            tenant_id=tenant_id,
+            company_id=company_id,
             limit=page_size,
             offset=(page - 1) * page_size,
             status=status,
@@ -545,14 +548,14 @@ class InvoiceService:
     async def list_billed(
         self,
         *,
+        company_id: uuid.UUID,
         page: int = 1,
         page_size: int = 20,
         uploaded_by: uuid.UUID | None = None,
-        tenant_id: str = "default",
     ) -> tuple[list[MatchHistory], int]:
         """Invoices that reached Odoo as a vendor bill, newest bill first."""
         return await self.invoices.list_billed(
-            tenant_id=tenant_id,
+            company_id=company_id,
             limit=page_size,
             offset=(page - 1) * page_size,
             uploaded_by=uploaded_by,
@@ -566,17 +569,28 @@ class InvoiceService:
         can_read_all: bool,
         with_lines: bool = False,
     ) -> MatchHistory:
-        """Fetch one invoice, enforcing ownership.
+        """Fetch one invoice, enforcing company first and ownership second.
 
-        A member may read only their own. The check is here rather than in the
-        route because the same rule has to hold for the file-link endpoint, and
-        a rule written twice is a rule that will eventually differ.
+        TWO checks, and the order matters:
 
-        NotFoundError, not ForbiddenError, when a member asks for someone
-        else's: a 403 would confirm the id exists.
+          1. **The company.** `can_read_all` means "every invoice in your
+             company", never "every invoice". Without this line an
+             administrator could read any invoice in the database by id, which
+             is the single worst thing a multi-company system can do.
+          2. **The uploader**, for members, who may read only their own.
+
+        Both live here rather than in the routes because the same pair has to
+        hold for the file-link endpoint too, and a rule written twice is a rule
+        that will eventually differ.
+
+        NotFoundError, never ForbiddenError. A 403 would confirm the id exists,
+        which turns this into a way to enumerate another company's invoices.
         """
         invoice = await self.invoices.find_by_id(invoice_id, with_lines=with_lines)
         if invoice is None:
+            raise NotFoundError("Invoice not found.", code="INVOICE_NOT_FOUND")
+
+        if invoice.company_id != company_of(user):
             raise NotFoundError("Invoice not found.", code="INVOICE_NOT_FOUND")
 
         if not can_read_all and invoice.uploaded_by != user.id:
@@ -601,11 +615,16 @@ class InvoiceService:
         return invoice, url, ttl
 
     async def get_stats(
-        self, *, user: User | None = None, tenant_id: str = "default"
+        self, *, company_id: uuid.UUID, user: User | None = None
     ) -> InvoiceStats:
-        """Counts per status. Scoped to one user when `user` is given."""
+        """Counts per status within one company.
+
+        `user` narrows it further to that person's own uploads — the member
+        dashboard. Company scoping applies either way: it is the floor, not an
+        alternative to the user filter.
+        """
         by_status = await self.invoices.count_by_status(
-            tenant_id=tenant_id, user_id=user.id if user else None
+            company_id=company_id, user_id=user.id if user else None
         )
         return InvoiceStats(
             total=sum(by_status.values()),
@@ -616,7 +635,7 @@ class InvoiceService:
         )
 
     async def trend(
-        self, *, days: int = 14, tenant_id: str = "default"
+        self, *, company_id: uuid.UUID, days: int = 14
     ) -> InvoiceTrend:
         """Arrivals and reviews per day, zero-filled across the whole window."""
         today = dt.date.today()
@@ -625,7 +644,7 @@ class InvoiceService:
         counted = {
             day: (received, reviewed)
             for day, received, reviewed in await self.invoices.daily_counts(
-                since=since, tenant_id=tenant_id
+                since=since, company_id=company_id
             )
         }
 

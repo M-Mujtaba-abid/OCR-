@@ -134,7 +134,9 @@ export interface MatchCandidates {
 }
 
 export interface InvoiceDetail extends Invoice {
-  tenant_id: string;
+  /** Which company owns this invoice. Every request is already scoped to the
+   *  caller's company, so this can only ever be their own. */
+  company_id: string;
   member_notes: string | null;
   batch_id: string | null;
   extracted_json: ExtractedInvoice | null;

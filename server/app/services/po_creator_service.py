@@ -43,7 +43,7 @@ from app.schemas.extraction import InvoiceExtraction
 from app.schemas.odoo import OdooEntityMatch
 from app.services.matching_engine import normalise_vendor
 from app.services.notification_service import NotificationService
-from app.services.odoo_service import odoo_service
+from app.services.odoo_service import OdooService, odoo_for_invoice
 from app.services.source_document import read_source_document
 
 logger = get_logger(__name__)
@@ -97,7 +97,9 @@ def _rank(text: str, rows: list[dict[str, object]]) -> list[OdooEntityMatch]:
     return scored
 
 
-async def resolve_vendor(name: str | None) -> OdooEntityMatch | None:
+async def resolve_vendor(
+    odoo: OdooService, name: str | None
+) -> OdooEntityMatch | None:
     """The one Odoo partner this vendor name means, or nothing.
 
     Nothing, rather than a best guess: a purchase order raised against the
@@ -107,7 +109,7 @@ async def resolve_vendor(name: str | None) -> OdooEntityMatch | None:
     if not name:
         return None
 
-    rows = await odoo_service.search_by_tokens("res.partner", _tokens(name))
+    rows = await odoo.search_by_tokens("res.partner", _tokens(name))
     ranked = _rank(name, rows)
     if not ranked or ranked[0].score < VENDOR_FLOOR:
         return None
@@ -126,9 +128,11 @@ async def resolve_vendor(name: str | None) -> OdooEntityMatch | None:
     return ranked[0]
 
 
-async def product_candidates(name: str) -> list[OdooEntityMatch]:
+async def product_candidates(
+    odoo: OdooService, name: str
+) -> list[OdooEntityMatch]:
     """The products this line might mean, best first. Never a verdict."""
-    rows = await odoo_service.search_by_tokens("product.product", _tokens(name))
+    rows = await odoo.search_by_tokens("product.product", _tokens(name))
     return _rank(name, rows)[:PRODUCT_CANDIDATES]
 
 
@@ -142,7 +146,9 @@ def _preselect(candidates: list[OdooEntityMatch]) -> int | None:
     return candidates[0].id
 
 
-async def build_preview(invoice: MatchHistory) -> dict[str, object]:
+async def build_preview(
+    odoo: OdooService, invoice: MatchHistory
+) -> dict[str, object]:
     """Everything the reviewer needs to approve a creation, and nothing more.
 
     Returned as a plain dict and validated by the API schema at the boundary,
@@ -152,11 +158,11 @@ async def build_preview(invoice: MatchHistory) -> dict[str, object]:
         raise InvoiceNotReadyError("This invoice has not been read yet.")
 
     extraction = InvoiceExtraction.model_validate(invoice.extracted_json)
-    vendor = await resolve_vendor(extraction.vendor_name)
+    vendor = await resolve_vendor(odoo, extraction.vendor_name)
 
     lines: list[dict[str, object]] = []
     for index, item in enumerate(extraction.items, start=1):
-        candidates = await product_candidates(item.name)
+        candidates = await product_candidates(odoo, item.name)
         lines.append(
             {
                 "line_no": index,
@@ -210,14 +216,16 @@ async def create_po_for_invoice(
             f"every line before creating the order."
         )
 
-    partners = await odoo_service.read_names("res.partner", [partner_id])
+    odoo = await odoo_for_invoice(db, invoice)
+
+    partners = await odoo.read_names("res.partner", [partner_id])
     if partner_id not in partners:
         raise InvoiceNotReadyError(
             f"Vendor {partner_id} no longer exists in Odoo.", code="PARTNER_NOT_FOUND"
         )
 
     product_ids = [int(line["product_id"]) for line in lines]  # type: ignore[arg-type]
-    products = await odoo_service.read_names("product.product", product_ids)
+    products = await odoo.read_names("product.product", product_ids)
     gone = [str(pid) for pid in product_ids if pid not in products]
     if gone:
         raise InvoiceNotReadyError(
@@ -233,7 +241,7 @@ async def create_po_for_invoice(
     # by hand.
     attachment = await read_source_document(invoice)
 
-    created = await odoo_service.create_draft_purchase_order(
+    created = await odoo.create_draft_purchase_order(
         partner_id=partner_id,
         date_order=_as_odoo_datetime(order_date),
         attachment=attachment,
@@ -297,7 +305,6 @@ async def create_po_for_invoice(
             message=f"{created.name} was created in Odoo as a draft.",
             match_history_id=invoice.id,
             company_id=invoice.company_id,
-            tenant_id=invoice.tenant_id,
         )
 
     await db.commit()

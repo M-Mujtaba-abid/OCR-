@@ -8,10 +8,17 @@ import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { useAuth, useLogout } from "@/hooks/auth/useAuth.hooks";
-import { ROLE_LABEL, homePathFor, navLinksFor } from "@/lib/auth/roles";
+import { useCompany } from "@/hooks/company/useCompany.hooks";
+import {
+  ROLE_LABEL,
+  homePathFor,
+  isPlatformOwner,
+  navLinksFor,
+} from "@/lib/auth/roles";
 
 export function Header() {
   const { user, isAuthenticated } = useAuth();
+  const company = useCompany();
   const logout = useLogout();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -26,15 +33,33 @@ export function Header() {
   const navLinks = navLinksFor(user);
   const homeHref = homePathFor(user);
 
+  // Which company this session is working in. On a platform that runs several,
+  // "whose data am I looking at" has to be answerable without navigating —
+  // otherwise the only way to tell FreshLeaf's queue from KJ's is to recognise
+  // the invoices in it.
+  //
+  // The platform owner belongs to no company, so they get the word for what
+  // they are instead. `useCompany` does not even make the request for them.
+  const workspace = isPlatformOwner(user)
+    ? "Platform"
+    : (company.data?.name ?? null);
+
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
       <div className="mx-auto flex h-16 w-full max-w-5xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
         <div className="flex items-center gap-8">
-          <Link
-            href={homeHref}
-            className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white"
-          >
-            OCR
+          <Link href={homeHref} className="flex items-baseline gap-2">
+            <span className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+              OCR
+            </span>
+            {workspace && (
+              <span
+                className="hidden max-w-[180px] truncate border-l border-slate-300 pl-2 text-sm font-medium text-slate-600 sm:inline dark:border-slate-700 dark:text-slate-300"
+                title={workspace}
+              >
+                {workspace}
+              </span>
+            )}
           </Link>
 
           <nav aria-label="Main" className="hidden items-center gap-1 sm:flex">
@@ -110,6 +135,14 @@ export function Header() {
           id="mobile-nav"
           className="border-t border-slate-200 bg-white px-4 py-3 sm:hidden dark:border-slate-800 dark:bg-slate-950"
         >
+          {workspace && (
+            // The header hides the workspace below `sm`, so the menu is where
+            // a phone answers "whose data is this".
+            <p className="px-3 pb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              {workspace}
+            </p>
+          )}
+
           <nav aria-label="Mobile" className="flex flex-col gap-1">
             {navLinks.map((link) => (
               <Link

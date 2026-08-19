@@ -1,6 +1,13 @@
 /** User and auth payloads, mirroring the FastAPI schemas. */
 
-export type UserRole = "member" | "manager" | "admin";
+/**
+ * The three company roles, plus the platform owner.
+ *
+ * `super_admin` is NOT a fourth rung on the ladder — it is outside the
+ * companies entirely, which is why it is the one role whose holder has no
+ * company. Treat it as a separate kind of account rather than a bigger admin.
+ */
+export type UserRole = "member" | "manager" | "admin" | "super_admin";
 
 /**
  * Permission strings from the backend's ROLE_PERMISSIONS table
@@ -22,7 +29,9 @@ export type Permission =
   | "invoice.create"
   | "invoice.approve"
   | "invoice.delete"
-  | "system.admin";
+  | "system.admin"
+  /** The platform owner's ONLY grant beyond reading their own account. */
+  | "platform.admin";
 
 export interface User {
   id: string;

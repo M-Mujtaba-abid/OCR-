@@ -79,6 +79,39 @@ export const queryKeys = {
     stats: [...(["users"] as const), "stats"] as const,
   },
 
+  /**
+   * The company the caller belongs to.
+   *
+   * Its own key rather than a branch of `session`: the session is invalidated
+   * on every role change and every sign-in, and the company name has not
+   * changed just because somebody was promoted.
+   */
+  company: {
+    all: ["company"] as const,
+    /**
+     * Under `all` rather than BEING it. A bare `["company"]` for the company
+     * itself would be a prefix of `odoo`, so refreshing the name would discard
+     * the connection status too — the same hierarchy mistake `users.lists` and
+     * `notifications.lists` exist to avoid.
+     */
+    current: [...(["company"] as const), "current"] as const,
+    /** The Odoo connection status. Never the credential. */
+    odoo: [...(["company"] as const), "odoo"] as const,
+  },
+
+  /**
+   * The platform console. Companies, never their contents.
+   *
+   * A prefix of its own rather than a branch of `users` or `invoices`: nothing
+   * cached here belongs to a company, so nothing a company mutation
+   * invalidates should reach it.
+   */
+  platform: {
+    all: ["platform"] as const,
+    companies: [...(["platform"] as const), "companies"] as const,
+    stats: [...(["platform"] as const), "stats"] as const,
+  },
+
   notifications: {
     all: ["notifications"] as const,
     /**

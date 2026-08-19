@@ -6,6 +6,7 @@ import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.models.user import User, UserRole
 
@@ -62,7 +63,23 @@ class UserRepository:
         return user
 
     async def find_by_id(self, user_id: uuid.UUID) -> User | None:
-        return await self.db.get(User, user_id)
+        """One user, with their company already loaded.
+
+        The company rides along on every lookup because authentication needs
+        it: a suspended company has to stop its members on the very next
+        request, and that check cannot be a second round trip on the hot path
+        of every authenticated call. It is a one-row join to a tiny table.
+
+        A `select` rather than `db.get`, deliberately. `db.get` consults the
+        identity map first and returns a cached instance WITHOUT applying the
+        loader options — so a user already in the session comes back with
+        `company` unloaded, and reading it raises under `lazy="raise"`. The
+        primary-key lookup this emits is the same one `db.get` would have.
+        """
+        stmt = (
+            select(User).where(User.id == user_id).options(joinedload(User.company))
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def find_by_email(self, email: str) -> User | None:
         stmt = select(User).where(User.email == self.normalize_email(email))

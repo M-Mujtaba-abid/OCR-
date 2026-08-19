@@ -20,11 +20,14 @@ import functools
 import json
 import threading
 import time
+import uuid
 import xmlrpc.client
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import anyio.to_thread
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -35,7 +38,12 @@ from app.core.exceptions import (
     OdooRefusedError,
     ReceiptNotPossibleError,
 )
+from app.core.secrets import decrypt_secret
 from app.lib.logging import get_logger
+from app.models.match_history import MatchHistory
+from app.repositories.company_odoo_config_repository import (
+    CompanyOdooConfigRepository,
+)
 from app.schemas.odoo import (
     OdooAttachment,
     OdooCreatedBill,
@@ -117,11 +125,44 @@ QTY_TOLERANCE = 0.001
 BILLABLE_PO_STATES = frozenset({"purchase", "done"})
 
 
-class _BlockingOdooClient:
-    """The synchronous XML-RPC client. Never called from the event loop."""
+@dataclass(frozen=True)
+class OdooCredentials:
+    """One company's Odoo login.
 
-    def __init__(self) -> None:
-        base = settings.odoo_base_url
+    Frozen, and passed explicitly rather than read from `settings` inside the
+    client. That is the whole of the multi-company change at this level: a
+    client that reaches for global configuration is a client that talks to
+    whichever Odoo the process was started against, no matter which company
+    asked.
+    """
+
+    base_url: str
+    database: str
+    username: str
+    api_key: str
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.base_url and self.database and self.username and self.api_key)
+
+    def __repr__(self) -> str:  # pragma: no cover - keeps keys out of logs
+        return (
+            f"OdooCredentials(base_url={self.base_url!r}, "
+            f"database={self.database!r}, username={self.username!r}, "
+            "api_key=***)"
+        )
+
+
+class _BlockingOdooClient:
+    """The synchronous XML-RPC client. Never called from the event loop.
+
+    One per company, holding that company's credentials and its own
+    authenticated uid. Nothing here reads `settings`.
+    """
+
+    def __init__(self, credentials: OdooCredentials) -> None:
+        self._credentials = credentials
+        base = credentials.base_url
         # allow_none is not optional: Odoo returns nulls, and without this
         # xmlrpc raises TypeError while marshalling them.
         self._common = xmlrpc.client.ServerProxy(
@@ -135,10 +176,12 @@ class _BlockingOdooClient:
 
     # ------------------------------------------------------------------ auth
     def authenticate(self, *, force: bool = False) -> int:
-        """Return the uid, authenticating once per process.
+        """Return the uid, authenticating once per client.
 
         Odoo's `authenticate` is a full login round trip, so caching it turns
-        every subsequent call into one request instead of two.
+        every subsequent call into one request instead of two. The uid belongs
+        to THIS client and therefore to one company's Odoo — it is meaningless
+        against another, which is why clients are never shared.
         """
         if self._uid is not None and not force:
             return self._uid
@@ -149,9 +192,9 @@ class _BlockingOdooClient:
 
             try:
                 uid = self._common.authenticate(
-                    settings.ODOO_DB,
-                    settings.ODOO_USERNAME,
-                    settings.ODOO_API_KEY.get_secret_value(),
+                    self._credentials.database,
+                    self._credentials.username,
+                    self._credentials.api_key,
                     {},
                 )
             except Exception as exc:
@@ -163,7 +206,11 @@ class _BlockingOdooClient:
                 raise OdooAuthError()
 
             self._uid = int(uid)
-            logger.info("Authenticated with Odoo as uid=%s", self._uid)
+            logger.info(
+                "Authenticated with Odoo %s as uid=%s",
+                self._credentials.database,
+                self._uid,
+            )
             return self._uid
 
     def execute(self, model: str, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -189,9 +236,9 @@ class _BlockingOdooClient:
         kwargs: dict[str, Any],
     ) -> Any:
         return self._models.execute_kw(
-            settings.ODOO_DB,
+            self._credentials.database,
             uid,
-            settings.ODOO_API_KEY.get_secret_value(),
+            self._credentials.api_key,
             model,
             method,
             list(args),
@@ -238,38 +285,119 @@ def odoo_refusal(fault: xmlrpc.client.Fault) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Client lifecycle
+# Credentials
+#
+# Cached per company because resolving them costs a database read and a
+# decryption, and every Odoo call would otherwise pay for both. Short TTL
+# rather than forever: an administrator who fixes a wrong API key should see it
+# take effect without a deploy, and saving credentials clears this entry
+# outright so the wait is only for changes made somewhere else.
 # ---------------------------------------------------------------------------
-_client: _BlockingOdooClient | None = None
+_credentials: dict[uuid.UUID, tuple[float, OdooCredentials]] = {}
+_credentials_lock = threading.Lock()
+
+#: How long a resolved credential set is reused.
+_CREDENTIALS_TTL_SECONDS = 300.0
+
+
+def _env_credentials() -> OdooCredentials:
+    """What the environment configures, as one company's credentials.
+
+    The fallback for a company with no stored configuration — which is how the
+    original single-company deployment keeps working untouched while other
+    companies are onboarded around it. When every company has its own row this
+    returns nothing complete and stops being reachable.
+    """
+    return OdooCredentials(
+        base_url=settings.odoo_base_url,
+        database=settings.ODOO_DB,
+        username=settings.ODOO_USERNAME,
+        api_key=settings.ODOO_API_KEY.get_secret_value(),
+    )
+
+
+def cache_credentials(company_id: uuid.UUID, credentials: OdooCredentials) -> None:
+    """Remember a resolved credential set for this company."""
+    with _credentials_lock:
+        _credentials[company_id] = (time.monotonic(), credentials)
+
+
+def cached_credentials(company_id: uuid.UUID) -> OdooCredentials | None:
+    """This company's credentials if they were resolved recently."""
+    with _credentials_lock:
+        entry = _credentials.get(company_id)
+    if entry is None or time.monotonic() - entry[0] > _CREDENTIALS_TTL_SECONDS:
+        return None
+    return entry[1]
+
+
+# ---------------------------------------------------------------------------
+# Client lifecycle
+#
+# ONE CLIENT PER COMPANY, and this dictionary is the reason the rest of this
+# module is safe. It used to be a single module-level client — correct while
+# there was one Odoo, and a cross-company data leak the moment there are two,
+# because whichever company connected first would answer for all of them.
+#
+# Keyed by company id, and every cache below is keyed the same way. If you add
+# another cache to this module, key it by company id too; there is no cache
+# here whose contents are safe to share between two of them.
+# ---------------------------------------------------------------------------
+_clients: dict[uuid.UUID, _BlockingOdooClient] = {}
 _client_lock = threading.Lock()
 
 
-def _get_client() -> _BlockingOdooClient:
-    global _client
-    if _client is not None:
-        return _client
+def _get_client(
+    company_id: uuid.UUID, credentials: OdooCredentials
+) -> _BlockingOdooClient:
+    """This company's client, made once and reused.
 
-    with _client_lock:
-        if _client is not None:
-            return _client
-        if not settings.is_odoo_configured:
-            raise OdooNotConfiguredError()
-        _client = _BlockingOdooClient()
-        return _client
-
-
-def reset_odoo_client() -> None:
-    """Drop the cached client, its uid and the probed field sets.
-
-    The capabilities go too: they describe a particular database's schema, and
-    pointing at a different Odoo without clearing them would carry one
-    deployment's field names into another's.
+    The credentials are passed in rather than looked up: resolving them needs
+    the database, and this runs on the hot path of every Odoo call.
     """
-    global _client
+    hit = _clients.get(company_id)
+    if hit is not None:
+        return hit
+
     with _client_lock:
-        _client = None
+        hit = _clients.get(company_id)
+        if hit is not None:
+            return hit
+        if not credentials.is_complete:
+            raise OdooNotConfiguredError()
+        client = _BlockingOdooClient(credentials)
+        _clients[company_id] = client
+        return client
+
+
+def reset_odoo_client(company_id: uuid.UUID | None = None) -> None:
+    """Drop a company's cached client, its uid and its probed field sets.
+
+    The capabilities go with it: they describe a particular database's schema,
+    and pointing a company at a different Odoo without clearing them would
+    carry one deployment's field names into another's.
+
+    `None` drops every company's — for tests, and for a process that has just
+    had its encryption key rotated underneath it. In ordinary use always name
+    the company, or changing one company's credentials would force every other
+    company to re-authenticate.
+    """
+    with _client_lock:
+        if company_id is None:
+            _clients.clear()
+        else:
+            _clients.pop(company_id, None)
     with _caps_lock:
-        _caps.clear()
+        if company_id is None:
+            _caps.clear()
+        else:
+            for key in [k for k in _caps if k[0] == company_id]:
+                del _caps[key]
+    with _credentials_lock:
+        if company_id is None:
+            _credentials.clear()
+        else:
+            _credentials.pop(company_id, None)
 
 
 async def _run(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -309,8 +437,26 @@ async def _run(fn: Any, *args: Any, **kwargs: Any) -> Any:
 #
 # Monotonic clock, not wall time: a clock adjustment must not make an entry
 # look hours old or immortal.
+#
+# THE COMPANY ID IS THE FIRST ELEMENT OF EVERY KEY, and this is the most
+# dangerous cache in the system. What it holds is a list of purchase orders —
+# vendors, references, amounts — and matching is the step that ends in a vendor
+# bill. An unkeyed hit here does not merely show the wrong data: it offers one
+# company's purchase orders as candidates for another company's invoice, and a
+# reviewer confirming that match creates a bill against an order that is not
+# theirs. Keys are built by `_cache_key` so this cannot be forgotten at a call
+# site.
 _cache: dict[tuple[Any, ...], tuple[float, list[OdooPurchaseOrder]]] = {}
 _cache_lock = threading.Lock()
+
+
+def _cache_key(company_id: uuid.UUID, *parts: Any) -> tuple[Any, ...]:
+    """Build a fetch-cache key. The company always comes first.
+
+    A function rather than a convention, so "did this key include the company"
+    is not a question anybody has to ask at a call site.
+    """
+    return (company_id, *parts)
 
 
 def _cached(key: tuple[Any, ...]) -> list[OdooPurchaseOrder] | None:
@@ -323,7 +469,7 @@ def _cached(key: tuple[Any, ...]) -> list[OdooPurchaseOrder] | None:
             return None
         # A copy: callers attach lines and are free to mutate what they get,
         # and a shared list would carry one invoice's changes into the next.
-        logger.debug("Odoo fetch served from cache (%s)", key[0])
+        logger.debug("Odoo fetch served from cache (%s)", key[1] if key[1:] else key)
         return list(entry[1])
 
 
@@ -334,10 +480,22 @@ def _remember(key: tuple[Any, ...], orders: list[OdooPurchaseOrder]) -> None:
         _cache[key] = (time.monotonic(), list(orders))
 
 
-def clear_fetch_cache() -> None:
-    """Forget every cached fetch. For tests and for a forced refresh."""
+def clear_fetch_cache(company_id: uuid.UUID | None = None) -> None:
+    """Forget one company's cached fetches, or everyone's.
+
+    Named companies in ordinary use. Clearing globally after a write — which is
+    what this did when there was one Odoo — would make every OTHER company
+    re-read several hundred orders because this one created a purchase order,
+    turning a correctness fix into a performance problem for everybody else.
+
+    `None` is for tests and for a deliberate full flush.
+    """
     with _cache_lock:
-        _cache.clear()
+        if company_id is None:
+            _cache.clear()
+            return
+        for key in [k for k in _cache if k and k[0] == company_id]:
+            del _cache[key]
 
 
 def match_recent_draft(
@@ -394,7 +552,13 @@ _PROBES: dict[str, list[str]] = {
 #: Odoo — so this is cached for the life of the process rather than under the
 #: TTL that guards `_cache`, where a 60-second expiry would keep re-asking a
 #: question whose answer never moves.
-_caps: dict[str, frozenset[str]] = {}
+#:
+#: Keyed by (company, model), because it describes ONE DATABASE'S schema.
+#: `document_attachment_ids` exists in FreshLeaf's Odoo because a customisation
+#: module puts it there; a shared cache would tell every other company's Odoo to
+#: write a field it has never heard of, and every bill would fail on a fault
+#: nobody could place.
+_caps: dict[tuple[uuid.UUID, str], frozenset[str]] = {}
 _caps_lock = threading.Lock()
 
 
@@ -738,7 +902,33 @@ def _load_fixture() -> list[OdooPurchaseOrder]:
 
 
 class OdooService:
-    """Async wrapper over the blocking client."""
+    """Async wrapper over the blocking client, bound to ONE company's Odoo.
+
+    Obtained through `odoo_for(company_id)`, never constructed at import time.
+    That is the change that makes this module multi-company: an instance is a
+    company's connection, so a method cannot be called without having said
+    which company is asking, and the caches it reaches for are keyed by the
+    same id it holds.
+
+    Instances are cheap and are not themselves cached — what is cached is the
+    client, the credentials and the probed schema behind them.
+    """
+
+    def __init__(self, company_id: uuid.UUID, credentials: OdooCredentials) -> None:
+        self.company_id = company_id
+        self._credentials = credentials
+
+    def _client(self) -> _BlockingOdooClient:
+        """This company's client. Every call in this class goes through here."""
+        return _get_client(self.company_id, self._credentials)
+
+    def _key(self, *parts: Any) -> tuple[Any, ...]:
+        """A fetch-cache key for this company."""
+        return _cache_key(self.company_id, *parts)
+
+    def clear_cache(self) -> None:
+        """Forget this company's cached fetches, and nobody else's."""
+        clear_fetch_cache(self.company_id)
 
     async def check_connection(self) -> dict[str, Any]:
         """Authenticate and report the server version. For /health and setup.
@@ -760,15 +950,17 @@ class OdooService:
                 ),
             }
 
-        client = _get_client()
+        client = self._client()
         uid = await _run(client.authenticate, force=True)
         version = await _run(lambda: client._common.version())
         return {
             "connected": True,
             "uid": uid,
             "server_version": version.get("server_version"),
-            "database": settings.ODOO_DB,
-            "url": settings.odoo_base_url,
+            # This company's Odoo, from the credentials this instance holds —
+            # not from the environment, which is only one company's fallback.
+            "database": self._credentials.database,
+            "url": self._credentials.base_url,
         }
 
     async def fetch_open_purchase_orders(
@@ -782,12 +974,13 @@ class OdooService:
         if settings.uses_odoo_fixture:
             return _load_fixture()[: limit or settings.ODOO_PO_FETCH_LIMIT]
 
-        key = ("open", limit or settings.ODOO_PO_FETCH_LIMIT)
+        # `self._key` puts the company first — see the note on `_cache`.
+        key = self._key("open", limit or settings.ODOO_PO_FETCH_LIMIT)
         hit = _cached(key)
         if hit is not None:
             return hit
 
-        client = _get_client()
+        client = self._client()
         domain: list[Any] = [
             ("state", "in", list(settings.ODOO_PO_STATES)),
             ("invoice_status", "in", list(settings.ODOO_PO_INVOICE_STATUSES)),
@@ -837,12 +1030,12 @@ class OdooService:
             # The fixture is the open set by definition — it has no history.
             return []
 
-        key = ("billed", since, limit or settings.ODOO_PO_FETCH_LIMIT)
+        key = self._key("billed", since, limit or settings.ODOO_PO_FETCH_LIMIT)
         hit = _cached(key)
         if hit is not None:
             return hit
 
-        client = _get_client()
+        client = self._client()
         domain: list[Any] = [
             ("state", "in", list(settings.ODOO_PO_STATES)),
             ("invoice_status", "not in", list(settings.ODOO_PO_INVOICE_STATUSES)),
@@ -915,7 +1108,7 @@ class OdooService:
         if settings.uses_odoo_fixture:
             return next((o for o in _load_fixture() if o.id == po_id), None)
 
-        client = _get_client()
+        client = self._client()
         rows: list[dict[str, Any]] = await _run(
             client.execute, "purchase.order", "read", [po_id], fields=PO_FIELDS
         )
@@ -947,12 +1140,12 @@ class OdooService:
         domain += [("name", "ilike", token) for token in tokens]
 
         ids: list[int] = await _run(
-            _get_client().execute, model, "search", domain, limit=limit
+            self._client().execute, model, "search", domain, limit=limit
         )
         if not ids:
             return []
         rows: list[dict[str, Any]] = await _run(
-            _get_client().execute, model, "read", ids, fields=["display_name"]
+            self._client().execute, model, "read", ids, fields=["display_name"]
         )
         return rows
 
@@ -961,7 +1154,7 @@ class OdooService:
         if not ids:
             return {}
         rows: list[dict[str, Any]] = await _run(
-            _get_client().execute, model, "read", ids, fields=["display_name"]
+            self._client().execute, model, "read", ids, fields=["display_name"]
         )
         return {int(r["id"]): str(r["display_name"]) for r in rows}
 
@@ -1042,7 +1235,7 @@ class OdooService:
                 "fixture. Set ODOO_URL, ODOO_DB and ODOO_USERNAME."
             )
 
-        client = _get_client()
+        client = self._client()
 
         # Before creating, check nothing identical was just created. A create
         # that reached Odoo and then failed on the way back leaves this side
@@ -1122,28 +1315,38 @@ class OdooService:
         )
         # A new order changes what "open" means, and a cached fetch would keep
         # answering with the set from before it existed.
-        clear_fetch_cache()
+        self.clear_cache()
         return OdooCreatedOrder(
             id=po_id, name=name, attachment_status=status, attachment_id=attachment_id
         )
 
     # --------------------------------------------------------------- billing
     async def _capabilities(self, model: str) -> frozenset[str]:
-        """Which of the probed fields this Odoo's `model` actually has."""
+        """Which of the probed fields THIS COMPANY'S Odoo has on `model`.
+
+        Keyed by company as well as model. Two deployments of the same Odoo
+        version do not necessarily have the same fields — one of them carries a
+        customisation module the other has never installed — so a shared answer
+        here makes this system write fields that do not exist.
+        """
+        cache_key = (self.company_id, model)
         with _caps_lock:
-            hit = _caps.get(model)
+            hit = _caps.get(cache_key)
         if hit is not None:
             return hit
 
         rows: dict[str, Any] = await _run(
-            _get_client().execute, model, "fields_get", _PROBES[model],
+            self._client().execute, model, "fields_get", _PROBES[model],
             attributes=["type"],
         )
         present = frozenset(rows or {})
         with _caps_lock:
-            _caps[model] = present
+            _caps[cache_key] = present
         logger.info(
-            "Odoo %s speaks: %s", model, sorted(present) or "(none of the probed fields)"
+            "Odoo %s speaks (company %s): %s",
+            model,
+            self.company_id,
+            sorted(present) or "(none of the probed fields)",
         )
         return present
 
@@ -1168,7 +1371,7 @@ class OdooService:
         if not ref:
             return []
 
-        client = _get_client()
+        client = self._client()
         fields = list(BILL_FIELDS)
         # Renamed from `invoice_payment_state` in Odoo 14. Asking for a field
         # this database does not have is a fault, not an empty column.
@@ -1220,7 +1423,7 @@ class OdooService:
         if not quantities:
             raise ReceiptNotPossibleError("No quantities were given to receive.")
 
-        client = _get_client()
+        client = self._client()
         dialect = stock_qty_dialect(await self._capabilities("stock.move"))
 
         # --- reads and pure refusals, nothing written yet --------------------
@@ -1367,7 +1570,7 @@ class OdooService:
         # `qty_received` and `invoice_status` both just moved, and both are
         # filtered on by `fetch_open_purchase_orders`. Cleared here rather than
         # only at the end of billing, because billing can fail in between.
-        clear_fetch_cache()
+        self.clear_cache()
         logger.info(
             "Received %s (%s) on order %s: %s, backorder(s) %s",
             after[0].get("name"),
@@ -1429,7 +1632,7 @@ class OdooService:
                 "Set ODOO_URL, ODOO_DB and ODOO_USERNAME."
             )
 
-        client = _get_client()
+        client = self._client()
 
         before = await self._po_invoice_ids(client, po_id)
         await _run(client.execute, "purchase.order", "action_create_invoice", [po_id])
@@ -1497,7 +1700,7 @@ class OdooService:
                 client, res_model="account.move", res_id=bill_id, attachment=attachment
             )
 
-        clear_fetch_cache()
+        self.clear_cache()
         logger.info(
             "Created draft vendor bill %s (ref=%r) on order %s with %d line(s), "
             "attachment=%s",
@@ -1533,7 +1736,7 @@ class OdooService:
         Odoo bare with it.
         """
         return await self._attach(
-            _get_client(), res_model=res_model, res_id=res_id, attachment=attachment
+            self._client(), res_model=res_model, res_id=res_id, attachment=attachment
         )
 
     async def _attach(
@@ -1716,4 +1919,71 @@ class OdooService:
         return True
 
 
-odoo_service = OdooService()
+# ---------------------------------------------------------------------------
+# Resolving a company's Odoo
+#
+# There is no module-level `odoo_service` any more, deliberately. It was the
+# single most dangerous object in this codebase once a second company existed:
+# an importable handle to "the" Odoo, callable from anywhere, that answered
+# with whichever deployment the process happened to be configured against.
+# Removing it means every caller has to say which company is asking, and the
+# ones that could not answer that question were exactly the ones with a bug.
+# ---------------------------------------------------------------------------
+async def resolve_credentials(
+    db: AsyncSession, company_id: uuid.UUID
+) -> OdooCredentials:
+    """This company's Odoo credentials, from its own configuration row.
+
+    Falls back to the environment when the company has no row of its own. That
+    fallback is what lets the original single-company deployment keep working
+    untouched while other companies are onboarded around it — and it is safe
+    precisely because it is per company: a company that HAS a row never sees
+    the environment, so onboarding a second company cannot redirect the first.
+    """
+    cached = cached_credentials(company_id)
+    if cached is not None:
+        return cached
+
+    config = await CompanyOdooConfigRepository(db).find_for_company(company_id)
+
+    if config is None:
+        credentials = _env_credentials()
+        if not credentials.is_complete:
+            raise OdooNotConfiguredError(
+                "This company has no Odoo configured, and no fallback is set "
+                "on the server."
+            )
+        logger.info(
+            "Company %s has no Odoo configuration — using the environment's",
+            company_id,
+        )
+    else:
+        if not config.is_enabled:
+            raise OdooNotConfiguredError(
+                "This company's Odoo connection is switched off."
+            )
+        credentials = OdooCredentials(
+            base_url=config.base_url.strip().rstrip("/"),
+            database=config.database,
+            username=config.username,
+            api_key=decrypt_secret(config.api_key_encrypted),
+        )
+
+    cache_credentials(company_id, credentials)
+    return credentials
+
+
+async def odoo_for(db: AsyncSession, company_id: uuid.UUID) -> OdooService:
+    """The Odoo service for one company. The only way to get one."""
+    return OdooService(company_id, await resolve_credentials(db, company_id))
+
+
+async def odoo_for_invoice(db: AsyncSession, invoice: MatchHistory) -> OdooService:
+    """The Odoo an invoice belongs to.
+
+    The form every pipeline stage uses. Tenancy comes off the ROW being worked
+    on rather than from a request or a global, which is what makes background
+    tasks and the cron sweep safe: each one loads its own invoice and gets its
+    own company with it.
+    """
+    return await odoo_for(db, invoice.company_id)

@@ -20,6 +20,11 @@ const ROLE_TONE: Record<UserRole, "neutral" | "warning" | "accent"> = {
   member: "neutral",
   manager: "warning",
   admin: "accent",
+  // Unreachable in this table — the platform owner belongs to no company, so
+  // no company's user list can contain one. Present because the map is keyed
+  // by the whole role union, and a missing key would be a runtime `undefined`
+  // rather than a compile error the day that changes.
+  super_admin: "accent",
 };
 
 export function UsersPanel({ adminCount }: { adminCount: number }) {

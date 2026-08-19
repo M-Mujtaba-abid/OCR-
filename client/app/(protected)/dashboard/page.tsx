@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { StatCard } from "@/components/ui/StatCard";
 import { TabPanel, Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useAuth, useLogout, useLogoutAll } from "@/hooks/auth/useAuth.hooks";
+import { useCompany } from "@/hooks/company/useCompany.hooks";
 import { useMyInvoiceStats } from "@/hooks/invoice/useInvoices.hooks";
 import { ROLE_LABEL, isAdmin } from "@/lib/auth/roles";
 
@@ -19,6 +20,7 @@ type TabId = "upload" | "invoices" | "account";
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const company = useCompany();
   const [tab, setTab] = useState<TabId>("upload");
 
   // Cached, so switching tabs does not refetch. The upload mutation invalidates
@@ -47,7 +49,10 @@ export default function DashboardPage() {
             {displayName}
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            {user.email}
+            {/* Which company this person uploads into. A member added by an
+                administrator has otherwise never been told the name of the
+                business whose invoices they are handling. */}
+            {company.data ? `${company.data.name} · ${user.email}` : user.email}
           </p>
         </div>
         <Badge tone={user.role === "manager" ? "warning" : "neutral"}>

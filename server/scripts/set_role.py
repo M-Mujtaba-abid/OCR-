@@ -47,6 +47,26 @@ async def main(email: str, role: UserRole, assume_yes: bool) -> int:
             print(f"{user.email} is already {role.value}. Nothing to do.")
             return 0
 
+        # The platform owner is not a rung on a company's ladder, so it is not
+        # something to promote INTO. This user belongs to a company; changing
+        # only the role would leave a platform owner sitting inside one, which
+        # is neither cleanly a company account nor cleanly a platform account.
+        if role is UserRole.SUPER_ADMIN:
+            print(
+                "Refusing: the platform owner must be an account with no "
+                "company.\nCreate one with:\n"
+                "    python scripts/create_super_admin.py <email>"
+            )
+            return 1
+
+        if user.role is UserRole.SUPER_ADMIN:
+            print(
+                "Refusing: this is the platform owner, and it has no company "
+                "to hold a company role in.\nDemoting it would violate the "
+                "users' check constraint."
+            )
+            return 1
+
         print(f"  user : {user.email}")
         print(f"  from : {user.role.value}")
         print(f"  to   : {role.value}")

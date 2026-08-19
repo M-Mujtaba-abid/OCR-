@@ -193,7 +193,24 @@ class Settings(BaseSettings):
     # is one that can be forwarded.
     DOWNLOAD_SIGNED_URL_TTL: int = Field(default=300, ge=30, le=3600)
 
+    # ------------------------------------------------------------- secrets
+    #: Encrypts the per-company Odoo API keys held in `company_odoo_config`.
+    #: Generate with:
+    #:   python -c "from cryptography.fernet import Fernet; \
+    #:              print(Fernet.generate_key().decode())"
+    #:
+    #: No default, not even a generated one. A per-process random key would
+    #: encrypt credentials that the next deploy could not read — every company
+    #: silently losing its Odoo connection on a restart, with nothing in the
+    #: logs but a decryption failure.
+    SECRETS_ENCRYPTION_KEY: SecretStr = SecretStr("")
+
     # ---------------------------------------------------------------- Odoo
+    #
+    # These four are the FALLBACK, not the source of truth. Each company's Odoo
+    # lives in `company_odoo_config`; a company with no row there uses what is
+    # set here, which is what keeps the original single-company deployment
+    # working untouched while other companies are onboarded around it.
     ODOO_URL: str = ""
     ODOO_DB: str = ""
     ODOO_USERNAME: str = ""

@@ -37,7 +37,7 @@ from app.schemas.matching import MatchVerdict
 from app.schemas.odoo import OdooPurchaseOrder
 from app.services import matching_engine
 from app.services.notification_service import NotificationService
-from app.services.odoo_service import odoo_service
+from app.services.odoo_service import OdooService, odoo_for_invoice
 
 logger = get_logger(__name__)
 
@@ -119,6 +119,7 @@ async def run_matching_for_invoice(invoice_id: uuid.UUID) -> None:
 
 
 async def _orders_to_consider(
+    odoo: OdooService,
     extraction: InvoiceExtraction,
 ) -> list[OdooPurchaseOrder]:
     """The orders this invoice is scored against.
@@ -138,7 +139,7 @@ async def _orders_to_consider(
     They are scored, never preferred: `invoice_status` travels with each
     candidate so the model and the screen can both say what they are looking at.
     """
-    orders = await odoo_service.fetch_open_purchase_orders()
+    orders = await odoo.fetch_open_purchase_orders()
 
     lookback = settings.MATCH_CLOSED_LOOKBACK_DAYS
     if lookback <= 0:
@@ -147,7 +148,7 @@ async def _orders_to_consider(
     # Anchored to the invoice's date when it has one — an invoice dated four
     # months ago should look four months back, not ninety days from today.
     anchor = extraction.order_date_value or dt.date.today()
-    billed = await odoo_service.fetch_recently_billed_orders(
+    billed = await odoo.fetch_recently_billed_orders(
         since=anchor - dt.timedelta(days=lookback)
     )
 
@@ -212,7 +213,11 @@ async def _match(
 ) -> None:
     extraction = InvoiceExtraction.model_validate(invoice.extracted_json)
 
-    orders = await _orders_to_consider(extraction)
+    # The invoice decides which Odoo is asked. Every order below therefore
+    # comes from the company that owns this invoice, and cannot come from
+    # another one — see `odoo_for_invoice`.
+    odoo = await odoo_for_invoice(db, invoice)
+    orders = await _orders_to_consider(odoo, extraction)
     candidates = matching_engine.rank(
         extraction,
         orders,
@@ -320,7 +325,6 @@ async def _match(
         ),
         match_history_id=invoice.id,
         company_id=invoice.company_id,
-        tenant_id=invoice.tenant_id,
     )
     await db.commit()
 
@@ -442,7 +446,6 @@ async def _record_no_match(
         message=reasoning[:500],
         match_history_id=invoice.id,
         company_id=invoice.company_id,
-        tenant_id=invoice.tenant_id,
     )
     await db.commit()
     logger.info("Invoice %s: no match (%s)", invoice.id, strategy)
@@ -481,7 +484,8 @@ async def confirm_match(
     if not invoice.extracted_json:
         raise InvoiceNotReadyError("This invoice has not been read yet.")
 
-    order = await odoo_service.fetch_purchase_order(po_id)
+    odoo = await odoo_for_invoice(db, invoice)
+    order = await odoo.fetch_purchase_order(po_id)
     if order is None:
         raise InvoiceNotReadyError(
             f"Purchase order {po_id} was not found in Odoo.", code="PO_NOT_FOUND"
@@ -513,7 +517,6 @@ async def confirm_match(
             message=f"Matched to {order.name} — {order.partner_name}",
             match_history_id=invoice.id,
             company_id=invoice.company_id,
-            tenant_id=invoice.tenant_id,
         )
 
     await db.commit()
@@ -552,7 +555,6 @@ async def reject_invoice(
             message=reason[:500],
             match_history_id=invoice.id,
             company_id=invoice.company_id,
-            tenant_id=invoice.tenant_id,
         )
 
     await db.commit()

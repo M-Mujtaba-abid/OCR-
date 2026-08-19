@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.controllers.invoice_controller import InvoiceController
 from app.db.session import get_db
 from app.dependencies.auth import require_permission, user_permissions
+from app.dependencies.tenancy import CurrentCompany
 from app.lib.responses import ApiErrorResponse, ApiResponse, PaginatedData
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
@@ -101,6 +102,7 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
 async def upload_invoices(
     controller: Controller,
     user: CanCreate,
+    company: CurrentCompany,
     background: BackgroundTasks,
     # `list[UploadFile]` maps to a repeated `files` part in the multipart body,
     # which is what a browser sends for <input type="file" multiple>.
@@ -110,6 +112,7 @@ async def upload_invoices(
 ) -> ApiResponse[UploadResult]:
     return await controller.upload(
         user=user,
+        company=company,
         files=files,
         member_ref_no=member_ref_no,
         member_notes=member_notes,
@@ -127,11 +130,15 @@ async def upload_urls(
     payload: UploadTicketsRequest,
     controller: Controller,
     _user: CanCreate,
+    company: CurrentCompany,
 ) -> ApiResponse[list[UploadTicket]]:
     """Step 1 of 2. The browser PUTs each file to the URL returned here, then
     calls `/register`. Bytes never pass through this API — a serverless request
-    body is capped at 4.5 MB and invoices are routinely larger."""
-    return await controller.upload_tickets(payload=payload)
+    body is capped at 4.5 MB and invoices are routinely larger.
+
+    The company decides the object-key prefix the URL is signed for, so a
+    ticket can only ever be issued inside the caller's own prefix."""
+    return await controller.upload_tickets(company=company, payload=payload)
 
 
 @router.post(
@@ -145,12 +152,14 @@ async def register_uploads(
     payload: RegisterUploadsRequest,
     controller: Controller,
     user: CanCreate,
+    company: CurrentCompany,
     background: BackgroundTasks,
 ) -> ApiResponse[UploadResult]:
     """Step 2 of 2. Each object's size and type are re-read from storage here,
-    so nothing the client claimed about the file is taken on trust."""
+    so nothing the client claimed about the file is taken on trust — including
+    the key, which must sit under this company's own prefix."""
     return await controller.register_uploads(
-        user=user, payload=payload, background=background
+        user=user, company=company, payload=payload, background=background
     )
 
 
@@ -178,8 +187,14 @@ async def my_invoices(
     summary="Your own invoice counts (requires invoice.read)",
     responses=ERROR_RESPONSES,
 )
-async def my_stats(controller: Controller, user: CanRead) -> ApiResponse[InvoiceStats]:
-    return await controller.stats(user=user)
+async def my_stats(
+    controller: Controller, user: CanRead, company: CurrentCompany
+) -> ApiResponse[InvoiceStats]:
+    # Both scopes: the company is the floor, the user narrows it to their own
+    # uploads. Passing only the user would count their invoices in every
+    # company they have never belonged to, which is zero today and wrong the
+    # first time somebody moves between companies.
+    return await controller.stats(company_id=company.id, user=user)
 
 
 @router.get(
@@ -191,6 +206,7 @@ async def my_stats(controller: Controller, user: CanRead) -> ApiResponse[Invoice
 async def admin_queue(
     controller: Controller,
     _actor: CanReadAll,
+    company: CurrentCompany,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     invoice_status: Annotated[InvoiceStatus | None, Query(alias="status")] = None,
@@ -198,6 +214,7 @@ async def admin_queue(
     uploaded_by: Annotated[uuid.UUID | None, Query()] = None,
 ) -> ApiResponse[PaginatedData[InvoiceListItem]]:
     return await controller.list_all(
+        company_id=company.id,
         page=page,
         page_size=page_size,
         status=invoice_status,
@@ -209,14 +226,16 @@ async def admin_queue(
 @router.get(
     "/admin/stats",
     response_model=ApiResponse[InvoiceStats],
-    summary="Tenant-wide invoice counts (requires invoice.read.all)",
+    summary="Company-wide invoice counts (requires invoice.read.all)",
     responses=ERROR_RESPONSES,
 )
 async def admin_stats(
-    controller: Controller, _actor: CanReadAll
+    controller: Controller, _actor: CanReadAll, company: CurrentCompany
 ) -> ApiResponse[InvoiceStats]:
     # Declared before /{invoice_id} so "admin" is never parsed as a UUID.
-    return await controller.stats(user=None)
+    # `user=None` widens this from one person's uploads to the whole company —
+    # and no further, because the company is a separate argument.
+    return await controller.stats(company_id=company.id, user=None)
 
 
 @router.get(
@@ -228,11 +247,12 @@ async def admin_stats(
 async def admin_trend(
     controller: Controller,
     _actor: CanReadAll,
+    company: CurrentCompany,
     days: Annotated[int, Query(ge=7, le=90)] = 14,
 ) -> ApiResponse[InvoiceTrend]:
     # Declared before /{invoice_id}, like /admin/stats, so "admin" is never
     # parsed as a UUID.
-    return await controller.trend(days=days)
+    return await controller.trend(company_id=company.id, days=days)
 
 
 @router.get(
@@ -244,6 +264,7 @@ async def admin_trend(
 async def admin_bill_history(
     controller: Controller,
     _actor: CanReadAll,
+    company: CurrentCompany,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     uploaded_by: Annotated[uuid.UUID | None, Query()] = None,
@@ -251,7 +272,10 @@ async def admin_bill_history(
     # Declared before /{invoice_id}, like the other /admin routes, so "admin"
     # is never parsed as a UUID.
     return await controller.bill_history(
-        page=page, page_size=page_size, uploaded_by=uploaded_by
+        company_id=company.id,
+        page=page,
+        page_size=page_size,
+        uploaded_by=uploaded_by,
     )
 
 
