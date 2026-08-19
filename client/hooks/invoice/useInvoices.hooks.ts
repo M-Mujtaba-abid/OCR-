@@ -16,6 +16,7 @@ import { invoiceService } from "@/service/invoiceService/invoice.service";
 import type { Paginated } from "@/types/api.type";
 import {
   TRANSIENT_STATUSES,
+  type BillHistoryParams,
   type CreateBillInput,
   type CreatePoInput,
   type Invoice,
@@ -114,6 +115,21 @@ export function useAdminInvoiceStats() {
   return useQuery({
     queryKey: queryKeys.invoices.adminStats,
     queryFn: () => invoiceService.adminStats(),
+  });
+}
+
+/**
+ * The bills already raised in Odoo. Requires invoice.read.all.
+ *
+ * No polling, unlike the queues above: a row only lands here when somebody
+ * clicks "create vendor bill", and that click invalidates the list prefix
+ * this key sits under. Nothing else can change it, so nothing needs watching.
+ */
+export function useBillHistory(params: BillHistoryParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.invoices.bills(params),
+    queryFn: () => invoiceService.billHistory(params),
+    placeholderData: keepPreviousData,
   });
 }
 

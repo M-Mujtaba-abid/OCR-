@@ -78,6 +78,9 @@ QTY_EPSILON = 1e-6
 #: has a second copy to forget.
 BILL_URL_TEMPLATE = "{base}/odoo/action-account.action_move_in_invoice_type/{bill_id}"
 
+#: And where its purchase order lives. Same reasoning, same place.
+PO_URL_TEMPLATE = "{base}/odoo/purchase/{po_id}"
+
 
 @dataclass(frozen=True)
 class ProposedPair:
@@ -262,6 +265,75 @@ def bill_url(bill_id: int | None) -> str:
     if not base or not bill_id:
         return ""
     return BILL_URL_TEMPLATE.format(base=base, bill_id=bill_id)
+
+
+def po_url(po_id: int | None) -> str:
+    """The Odoo deep link for a purchase order."""
+    base = settings.odoo_base_url
+    if not base or not po_id:
+        return ""
+    return PO_URL_TEMPLATE.format(base=base, po_id=po_id)
+
+
+def bill_history_item(invoice: MatchHistory) -> dict[str, Any]:
+    """One history row, read back out of the audit blob this module wrote.
+
+    Deliberately no Odoo call. A history of a hundred bills would be a hundred
+    round trips to render, it would show what Odoo holds *now* rather than what
+    was created, and it would go blank the day Odoo is down — which is the day
+    somebody most wants to look up what was already sent.
+
+    Everything falls back to the promoted columns, because `extra["odoo_bill"]`
+    is written by this module and any bill raised before it existed has only
+    `odoo_bill_id` and `final_po_id` to go on. A history that hides those rows
+    would under-report the very thing it is counting.
+    """
+    bill = (invoice.extra or {}).get("odoo_bill")
+    if not isinstance(bill, dict):
+        bill = {}
+
+    bill_id = invoice.odoo_bill_id or bill.get("id")
+    order_id = invoice.final_po_id or invoice.matched_po_id or bill.get("po_id")
+
+    #: Only ever a date in the blob, but it is JSON and this is the one field a
+    #: person reads as a date rather than as an opaque label.
+    raw_date = bill.get("invoice_date")
+    try:
+        billed_date = dt.date.fromisoformat(raw_date) if raw_date else None
+    except (TypeError, ValueError):
+        billed_date = None
+
+    backorders = bill.get("backorders")
+    lines = bill.get("lines")
+
+    return {
+        "invoice_id": invoice.id,
+        "file_name": invoice.file_name,
+        "member_ref_no": invoice.member_ref_no,
+        "vendor": invoice.extracted_vendor,
+        "invoice_no": invoice.extracted_invoice_no,
+        "invoice_total": invoice.extracted_total,
+        "currency": invoice.extracted_currency,
+        "bill_id": bill_id,
+        # `odoo_bill_ref` is the model's own reader for this blob. Used rather
+        # than re-derived so the label here and the one on the review screen
+        # cannot drift apart.
+        "bill_ref": invoice.odoo_bill_ref or bill.get("vendor_ref"),
+        "bill_amount": bill.get("amount_total"),
+        "bill_date": billed_date,
+        "bill_url": bill_url(bill_id),
+        "attachment_status": bill.get("attachment"),
+        "po_id": order_id,
+        "po_name": bill.get("po_name") or invoice.matched_po_name,
+        "po_url": po_url(order_id),
+        "receipt_name": bill.get("receipt"),
+        "backorder_names": list(backorders) if isinstance(backorders, list) else [],
+        "line_count": len(lines) if isinstance(lines, list) else 0,
+        "was_corrected": bool(invoice.was_corrected),
+        "billed_at": invoice.pushed_at,
+        "uploader": invoice.uploader,
+        "reviewer": invoice.reviewer,
+    }
 
 
 # ---------------------------------------------------------------------------

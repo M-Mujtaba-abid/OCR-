@@ -4,6 +4,8 @@ import { DIRECT_UPLOAD } from "@/lib/env";
 import api, { UPLOAD_TIMEOUT } from "@/service/api";
 import type { ApiResponse, Paginated } from "@/types/api.type";
 import type {
+  BillHistoryItem,
+  BillHistoryParams,
   BillPreview,
   CreateBillInput,
   CreateBillResult,
@@ -184,6 +186,25 @@ export const invoiceService = {
 
   adminStats: async (): Promise<InvoiceStats> => {
     const response = await api.get<ApiResponse<InvoiceStats>>("/invoices/admin/stats");
+    return response.data.data;
+  },
+
+  /**
+   * Every vendor bill this system raised in Odoo.
+   *
+   * Served from what was recorded at creation time, not from Odoo — so it
+   * loads at list speed and still answers when Odoo is down. Requires
+   * invoice.read.all.
+   */
+  billHistory: async ({
+    page = 1,
+    pageSize = 20,
+    uploadedBy,
+  }: BillHistoryParams = {}): Promise<Paginated<BillHistoryItem>> => {
+    const response = await api.get<ApiResponse<Paginated<BillHistoryItem>>>(
+      "/invoices/admin/bills",
+      { params: { page, page_size: pageSize, uploaded_by: uploadedBy } },
+    );
     return response.data.data;
   },
 

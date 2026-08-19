@@ -1,6 +1,6 @@
 import type { ListNotificationsParams } from "@/service/notificationService/notification.service";
 import type { ListUsersParams } from "@/service/userService/user.service";
-import type { InvoiceListParams } from "@/types/invoice.type";
+import type { BillHistoryParams, InvoiceListParams } from "@/types/invoice.type";
 
 /**
  * Every query key in one place.
@@ -36,6 +36,14 @@ export const queryKeys = {
       [...queryKeys.invoices.lists, "mine", params] as const,
     queue: (params: InvoiceListParams = {}) =>
       [...queryKeys.invoices.lists, "queue", params] as const,
+    /**
+     * The bills already raised in Odoo.
+     *
+     * Under `lists` so that creating one refreshes the history with everything
+     * else, without a second invalidation target to remember.
+     */
+    bills: (params: BillHistoryParams = {}) =>
+      [...queryKeys.invoices.lists, "bills", params] as const,
     detail: (id: string) => [...queryKeys.invoices.all, "detail", id] as const,
     /** The Odoo resolution for a would-be purchase order. */
     poPreview: (id: string) =>

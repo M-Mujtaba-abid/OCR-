@@ -521,6 +521,22 @@ class InvoiceService:
             uploaded_by=uploaded_by,
         )
 
+    async def list_billed(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        uploaded_by: uuid.UUID | None = None,
+        tenant_id: str = "default",
+    ) -> tuple[list[MatchHistory], int]:
+        """Invoices that reached Odoo as a vendor bill, newest bill first."""
+        return await self.invoices.list_billed(
+            tenant_id=tenant_id,
+            limit=page_size,
+            offset=(page - 1) * page_size,
+            uploaded_by=uploaded_by,
+        )
+
     async def get_for_user(
         self,
         *,

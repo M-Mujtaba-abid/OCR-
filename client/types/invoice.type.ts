@@ -346,6 +346,59 @@ export interface CreateBillResult {
   invoice: InvoiceDetail;
 }
 
+/* -------------------------------------------------------------------------
+ * Bill history
+ *
+ * What was billed, after the fact. Every field is read back out of the record
+ * written at creation time rather than re-fetched from Odoo — so the history
+ * says what this system did, and still answers when Odoo is unreachable.
+ * ---------------------------------------------------------------------- */
+
+export interface BillHistoryItem {
+  /** The invoice it came from — what the review link is routed by. */
+  invoice_id: string;
+  file_name: string;
+  member_ref_no: string | null;
+
+  /** What the document said, kept beside the Odoo figures on purpose: a bill
+   *  that disagrees with its invoice is the thing worth finding in a history. */
+  vendor: string | null;
+  invoice_no: string | null;
+  invoice_total: number | null;
+  currency: string | null;
+
+  bill_id: number | null;
+  /** The vendor's own number, not an Odoo sequence — these stay in draft. */
+  bill_ref: string | null;
+  bill_amount: number | null;
+  /** ISO date, `YYYY-MM-DD`. The bill's accounting date in Odoo. */
+  bill_date: string | null;
+  /** Empty when no Odoo base URL is configured — render no link, not a dead one. */
+  bill_url: string;
+  attachment_status: AttachmentStatus | string | null;
+
+  po_id: number | null;
+  po_name: string | null;
+  po_url: string;
+
+  receipt_name: string | null;
+  backorder_names: string[];
+  line_count: number;
+
+  /** True when the reviewer billed an order the matcher had not suggested. */
+  was_corrected: boolean;
+  billed_at: string | null;
+  uploader: InvoiceUploader | null;
+  /** Who approved it. Null once that account is deleted. */
+  reviewer: InvoiceUploader | null;
+}
+
+export interface BillHistoryParams {
+  page?: number;
+  pageSize?: number;
+  uploadedBy?: string;
+}
+
 /** A file the server refused. Reported per-file so a partial upload is legible. */
 export interface UploadRejection {
   file_name: string;

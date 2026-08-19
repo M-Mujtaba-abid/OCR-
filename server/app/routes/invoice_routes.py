@@ -36,6 +36,7 @@ from app.lib.responses import ApiErrorResponse, ApiResponse, PaginatedData
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
 from app.schemas.invoice import (
+    BillHistoryItem,
     BillPreview,
     ConfirmMatchRequest,
     CreateBillRequest,
@@ -232,6 +233,26 @@ async def admin_trend(
     # Declared before /{invoice_id}, like /admin/stats, so "admin" is never
     # parsed as a UUID.
     return await controller.trend(days=days)
+
+
+@router.get(
+    "/admin/bills",
+    response_model=ApiResponse[PaginatedData[BillHistoryItem]],
+    summary="Vendor bills raised in Odoo (requires invoice.read.all)",
+    responses=ERROR_RESPONSES,
+)
+async def admin_bill_history(
+    controller: Controller,
+    _actor: CanReadAll,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    uploaded_by: Annotated[uuid.UUID | None, Query()] = None,
+) -> ApiResponse[PaginatedData[BillHistoryItem]]:
+    # Declared before /{invoice_id}, like the other /admin routes, so "admin"
+    # is never parsed as a UUID.
+    return await controller.bill_history(
+        page=page, page_size=page_size, uploaded_by=uploaded_by
+    )
 
 
 @router.get(

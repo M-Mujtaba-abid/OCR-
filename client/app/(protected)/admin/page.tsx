@@ -6,6 +6,7 @@ import { UsersPanel } from "@/components/admin/UsersPanel";
 import { PipelineBar } from "@/components/charts/PipelineBar";
 import { StatusBreakdown } from "@/components/charts/StatusBreakdown";
 import { TrendChart } from "@/components/charts/TrendChart";
+import { BillHistoryPanel } from "@/components/invoices/BillHistoryPanel";
 import { InvoicesPanel } from "@/components/invoices/InvoicesPanel";
 import { Badge } from "@/components/ui/Badge";
 import { StatCard } from "@/components/ui/StatCard";
@@ -19,7 +20,7 @@ import { useUserStats } from "@/hooks/user/useUsers.hooks";
 import { ROLE_LABEL } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/user.type";
 
-type TabId = "overview" | "invoices" | "users";
+type TabId = "overview" | "invoices" | "users" | "history";
 
 /** Least to most privileged, so the shape of the org reads top to bottom. */
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
@@ -38,10 +39,16 @@ export default function AdminPage() {
 
   if (!user) return null;
 
+  // The billed count is read off the same stats query the card above uses,
+  // rather than the history endpoint: the tab strip must not fire a paginated
+  // request for a panel nobody has opened.
+  const billed = invoiceStats?.by_status.pushed;
+
   const tabs: readonly TabItem<TabId>[] = [
     { id: "overview", label: "Overview" },
     { id: "invoices", label: "Invoices", badge: invoiceStats?.total },
     { id: "users", label: "Users", badge: userStats?.total },
+    { id: "history", label: "History", badge: billed },
   ];
 
   return (
@@ -65,11 +72,15 @@ export default function AdminPage() {
           tone="warning"
           hint="Awaiting review, failed, or unmatched"
         />
+        {/* What was billed, not what was raised. An order created in Odoo is
+            work started; a bill against one is work finished, and finished is
+            the number a dashboard should lead with. The full history sits
+            behind the tab of the same name. */}
         <StatCard
-          label="POs created"
-          value={invoiceStats?.by_status.po_created}
+          label="Bills created"
+          value={billed}
           tone="accent"
-          hint="Raised in Odoo from an invoice, as drafts"
+          hint="Vendor bills raised in Odoo, as drafts"
         />
         <StatCard
           label="Invoices"
@@ -159,6 +170,10 @@ export default function AdminPage() {
 
         <TabPanel id="users" active={tab === "users"}>
           <UsersPanel adminCount={userStats?.by_role.admin ?? 0} />
+        </TabPanel>
+
+        <TabPanel id="history" active={tab === "history"}>
+          <BillHistoryPanel />
         </TabPanel>
       </div>
     </div>

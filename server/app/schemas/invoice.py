@@ -571,3 +571,59 @@ class CreateBillResult(BaseModel):
     receipt_name: str | None = None
     backorder_names: list[str] = Field(default_factory=list)
     invoice: InvoiceDetail
+
+
+# ---------------------------------------------------------------------------
+# Bill history
+#
+# What was actually billed, after the fact. Every field below is read back out
+# of `MatchHistory.extra["odoo_bill"]` — the record written at creation time —
+# rather than re-fetched from Odoo. That is the point of a history: it reports
+# what this system did, at the moment it did it, and stays answerable when
+# Odoo is unreachable or somebody has since edited the bill there.
+# ---------------------------------------------------------------------------
+class BillHistoryItem(BaseModel):
+    """One vendor bill this system raised in Odoo, with its invoice and order."""
+
+    #: The invoice it came from — the id the review screen is routed by.
+    invoice_id: uuid.UUID
+    file_name: str
+    member_ref_no: str | None = None
+
+    #: What the document said. Kept beside the Odoo figures deliberately: a
+    #: bill that does not agree with its invoice is the thing worth finding in
+    #: a history, and it cannot be seen if only one of the two is shown.
+    vendor: str | None = None
+    invoice_no: str | None = None
+    invoice_total: float | None = None
+    currency: str | None = None
+
+    #: The bill. `bill_ref` is the vendor's own number, not an Odoo sequence —
+    #: these are left in draft and Odoo does not number a bill until it posts.
+    bill_id: int | None = None
+    bill_ref: str | None = None
+    bill_amount: float | None = None
+    bill_date: dt.date | None = None
+    #: Empty when Odoo has no base URL configured, which is how the client
+    #: knows not to render a dead link.
+    bill_url: str = ""
+    attachment_status: str | None = None
+
+    #: The purchase order it was billed against.
+    po_id: int | None = None
+    po_name: str | None = None
+    po_url: str = ""
+
+    #: The goods receipt, when one was recorded, and what is still to come.
+    receipt_name: str | None = None
+    backorder_names: list[str] = Field(default_factory=list)
+    #: Order lines the bill actually carried, per the mapping that was used.
+    line_count: int = 0
+
+    #: True when the reviewer billed an order the matcher had not suggested.
+    was_corrected: bool = False
+    billed_at: dt.datetime | None = None
+    uploader: UploaderRead | None = None
+    #: Who approved it. Null once that account is deleted — the FK is SET NULL,
+    #: because losing a user must not erase the billing record.
+    reviewer: UploaderRead | None = None

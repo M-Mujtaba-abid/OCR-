@@ -9,9 +9,10 @@ from typing import Any
 
 from sqlalchemy import ColumnElement, Select, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import contains_eager, selectinload
+from sqlalchemy.orm import aliased, contains_eager, selectinload
 
 from app.models.match_history import OPEN_STATUSES, InvoiceStatus, MatchHistory
+from app.models.user import User
 
 
 class MatchHistoryRepository:
@@ -134,11 +135,17 @@ class MatchHistoryRepository:
         *,
         limit: int,
         offset: int,
+        order_by: ColumnElement[Any] | None = None,
     ) -> tuple[list[MatchHistory], int]:
+        # Arrival order for every queue. `order_by` overrides it where the list
+        # is about something that happened later than the upload — a bill
+        # history reads newest-billed first, and sorting that by upload date
+        # would interleave last week's bills through today's.
         stmt = stmt.where(*where) if where else stmt
+        ordering = MatchHistory.created_at.desc() if order_by is None else order_by
         rows = (
             await self.db.execute(
-                stmt.order_by(MatchHistory.created_at.desc()).limit(limit).offset(offset)
+                stmt.order_by(ordering).limit(limit).offset(offset)
             )
         ).unique().all()
 
@@ -187,6 +194,59 @@ class MatchHistoryRepository:
         if uploaded_by is not None:
             where.append(MatchHistory.uploaded_by == uploaded_by)
         return await self._page(self._page_query(), where, limit=limit, offset=offset)
+
+    def _billed_page_query(self) -> Select[tuple[MatchHistory, int]]:
+        """A page of billed invoices, with both people on it.
+
+        Two joins back to `users` — the uploader and the reviewer — so each
+        needs its own alias; without one, SQLAlchemy has no way to say which
+        join a column belongs to. This is the only query here that wants the
+        reviewer, which is why it is separate from `_page_query` rather than an
+        option on it: every other list would pay for a join it never reads.
+        """
+        uploader = aliased(User)
+        reviewer = aliased(User)
+        return (
+            select(MatchHistory, func.count().over().label("total"))
+            .outerjoin(uploader, MatchHistory.uploaded_by == uploader.id)
+            .options(contains_eager(MatchHistory.uploader.of_type(uploader)))
+            .outerjoin(reviewer, MatchHistory.reviewed_by == reviewer.id)
+            .options(contains_eager(MatchHistory.reviewer.of_type(reviewer)))
+        )
+
+    async def list_billed(
+        self,
+        *,
+        tenant_id: str = "default",
+        limit: int = 20,
+        offset: int = 0,
+        uploaded_by: uuid.UUID | None = None,
+    ) -> tuple[list[MatchHistory], int]:
+        """Invoices that became a vendor bill in Odoo, newest bill first.
+
+        Filtered on `pushed_to_odoo`, not on `status == PUSHED`. The flag is
+        what the bill writer sets, and it is the narrower claim: an invoice
+        whose bill already existed in Odoo is answered and returned without
+        either being set, so neither filter includes it — but only the flag
+        stays true if the status machine ever grows a step past PUSHED.
+
+        `pushed_at` is nullable, and NULLS LAST keeps any row written before
+        that column was populated at the bottom instead of at the top, where
+        Postgres puts nulls by default on a DESC sort.
+        """
+        where: list[ColumnElement[bool]] = [
+            MatchHistory.tenant_id == tenant_id,
+            MatchHistory.pushed_to_odoo.is_(True),
+        ]
+        if uploaded_by is not None:
+            where.append(MatchHistory.uploaded_by == uploaded_by)
+        return await self._page(
+            self._billed_page_query(),
+            where,
+            limit=limit,
+            offset=offset,
+            order_by=MatchHistory.pushed_at.desc().nullslast(),
+        )
 
     async def count(
         self,

@@ -13,6 +13,7 @@ from app.models.match_history import InvoiceStatus
 from app.models.user import User
 from app.core.config import settings
 from app.schemas.invoice import (
+    BillHistoryItem,
     BillOutcome,
     BillPreview,
     ConfirmMatchRequest,
@@ -39,6 +40,7 @@ from app.services.match_service import (
     run_matching_for_invoice,
 )
 from app.services.bill_creator_service import (
+    bill_history_item,
     bill_url,
     build_bill_preview,
     create_bill_for_invoice,
@@ -47,15 +49,18 @@ from app.services.ocr_service import run_ocr_for_invoice
 from app.services.po_creator_service import build_preview, create_po_for_invoice
 
 
+def _meta(page: int, page_size: int, total: int) -> PaginationMeta:
+    return PaginationMeta(
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=max(1, math.ceil(total / page_size)),
+    )
+
+
 def _page(items: list[InvoiceListItem], page: int, page_size: int, total: int):
     return PaginatedData[InvoiceListItem](
-        items=items,
-        pagination=PaginationMeta(
-            page=page,
-            page_size=page_size,
-            total=total,
-            pages=max(1, math.ceil(total / page_size)),
-        ),
+        items=items, pagination=_meta(page, page_size, total)
     )
 
 
@@ -140,6 +145,30 @@ class InvoiceController:
                 total,
             ),
             message="Invoices retrieved",
+        )
+
+    async def bill_history(
+        self, *, page: int, page_size: int, uploaded_by: uuid.UUID | None
+    ) -> ApiResponse[PaginatedData[BillHistoryItem]]:
+        """Every bill this system raised, newest first.
+
+        The rows are read straight out of what was recorded at creation time —
+        no Odoo call — so this answers just as well when Odoo is down. The deep
+        links are built here, from one server-side template, because the URL
+        shape is Odoo-version-specific and a client that builds its own is a
+        second copy to forget.
+        """
+        items, total = await self.service.list_billed(
+            page=page, page_size=page_size, uploaded_by=uploaded_by
+        )
+        return ApiResponse.ok(
+            PaginatedData[BillHistoryItem](
+                items=[
+                    BillHistoryItem.model_validate(bill_history_item(i)) for i in items
+                ],
+                pagination=_meta(page, page_size, total),
+            ),
+            message="Bill history retrieved",
         )
 
     async def get(
