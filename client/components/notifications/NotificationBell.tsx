@@ -153,6 +153,9 @@ const TONE: Record<NotificationType, string> = {
   invoice_corrected: "bg-emerald-600",
   invoice_rejected: "bg-red-600 dark:bg-red-500",
   invoice_pushed: "bg-emerald-600",
+  approval_requested: "bg-sky-600 dark:bg-sky-500",
+  approval_granted: "bg-emerald-600",
+  approval_declined: "bg-red-600 dark:bg-red-500",
 };
 
 function NotificationRow({
@@ -166,13 +169,24 @@ function NotificationRow({
 }) {
   const markRead = useMarkNotificationRead();
 
-  // Only somebody who may read every invoice has a detail route to open. For
-  // everybody else the row still marks itself read — a link that 403s is worse
-  // than no link.
-  const href =
-    item.match_history_id && canOpenInvoices
-      ? `/admin/invoices/${item.match_history_id}`
-      : null;
+  // Where this row goes, and it is not always the invoice.
+  //
+  // "Your approval is needed" is sent to whoever is named on the step, and a
+  // chain can name anybody — a receiving clerk on a member account is the case
+  // the feature exists for. They cannot open /admin, so pointing them at the
+  // invoice would leave the one notification that demands an action as the one
+  // with no link on it. /approvals is open to every company account and is
+  // where they can actually decide.
+  //
+  // Granted and declined go the other way: they are sent to whoever asked, who
+  // holds invoice.review by definition, and the invoice is what they want.
+  const href = !item.match_history_id
+    ? null
+    : item.type === "approval_requested"
+      ? "/approvals"
+      : canOpenInvoices
+        ? `/admin/invoices/${item.match_history_id}`
+        : null;
 
   const read = () => {
     if (!item.is_read) markRead.mutate(item.id);

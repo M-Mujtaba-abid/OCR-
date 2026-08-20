@@ -162,6 +162,12 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         # that ends in a vendor being paid.
         "invoice.bill",
         "invoice.delete",
+        # Who writes the approval policy. Deliberately NOT a permission to
+        # approve: which rungs exist is an administrative decision, but who may
+        # decide one is answered by the chain's own snapshot, so that a company
+        # can put its receiving clerk on a step without also handing them
+        # anything else an admin holds.
+        "approval.configure",
         "system.admin",
     },
     # The platform owner. Read this grant as a DENY LIST — what is missing is

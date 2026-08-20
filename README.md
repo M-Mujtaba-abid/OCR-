@@ -123,8 +123,19 @@ integration failures.
   the first place.
 
 Roles are `member` / `manager` / `admin`, but routes gate on **permissions**
-(`invoice.read.all`, `invoice.approve`, `user.update`, …) so re-shuffling which
-role holds what is one line in `app/dependencies/auth.py`.
+(`invoice.read.all`, `invoice.review`, `invoice.bill`, `user.update`, …) so
+re-shuffling which role holds what is one line in `app/dependencies/auth.py`.
+
+The split worth knowing: a manager holds `invoice.review` and gets an invoice
+ready; an admin holds `invoice.bill` and raises the vendor bill. Reviewing and
+committing to pay are separate decisions.
+
+Approval chains sit on top of that. A company can define its own ordered steps —
+receiving confirms the goods arrived, then an admin signs off — and until the
+chain completes, `create_bill_for_invoice` refuses. A company with no active
+chain bills exactly as it did before the feature existed. Writing the policy
+takes `approval.configure`; **deciding** a step takes no permission at all, since
+who may approve a given rung is answered by that request's own frozen snapshot.
 
 Frontend role checks are cosmetic. Every request is authorised server-side.
 

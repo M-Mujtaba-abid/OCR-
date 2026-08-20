@@ -324,6 +324,33 @@ class ReceiptNotPossibleError(AppError):
     message = "The goods receipt could not be recorded automatically."
 
 
+class ApprovalRequiredError(AppError):
+    """409. An approval chain is active and this bill has not been through it.
+
+    Two codes, because the caller can act on the difference: APPROVAL_REQUIRED
+    means nobody has asked yet and the reviewer should; APPROVAL_PENDING means
+    the request exists and is waiting on somebody else, so the only useful
+    response is to go and look at who.
+    """
+
+    status_code, code = 409, "APPROVAL_REQUIRED"
+    message = "This invoice has not been approved for billing."
+
+
+class ApprovalExceededError(AppError):
+    """409. The bill claims more than the approvers agreed to.
+
+    The sibling of `OverBilledError`, and needed for the same reason a purchase
+    order has a ceiling: quantities stay editable right up to submission, so
+    approval of an invoice is worth nothing unless it is also approval of an
+    amount. Without this, a request approved at one figure can be billed at
+    another by the person who submits it.
+    """
+
+    status_code, code = 409, "APPROVAL_EXCEEDED"
+    message = "This bill asks for more than was approved."
+
+
 class NothingToBillError(AppError):
     """409. Odoo has nothing left to invoice on this order.
 

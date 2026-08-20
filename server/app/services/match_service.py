@@ -36,6 +36,7 @@ from app.schemas.extraction import InvoiceExtraction
 from app.schemas.matching import MatchVerdict
 from app.schemas.odoo import OdooPurchaseOrder
 from app.services import matching_engine
+from app.services.approval_service import ApprovalService
 from app.services.notification_service import NotificationService
 from app.services.odoo_service import OdooService, odoo_for_invoice
 
@@ -539,6 +540,17 @@ async def reject_invoice(
 ) -> MatchHistory:
     """Discard an invoice, with a reason the uploader can see."""
     repo = MatchHistoryRepository(db)
+
+    # Before the status changes, because it reads the invoice's current state.
+    #
+    # A rejected invoice can no longer be billed, so a chain still running on it
+    # asks its approvers to sign off something already thrown away — and nobody
+    # would ever go and decide the rung, because deciding it unblocks nothing.
+    # Closing it here is what stops those rows sitting in people's queues.
+    await ApprovalService(db).abandon_for_invoice(
+        invoice, by=reviewer_id, reason=reason
+    )
+
     await repo.update(
         invoice,
         status=InvoiceStatus.REJECTED,

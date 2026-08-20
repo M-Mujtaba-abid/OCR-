@@ -112,6 +112,25 @@ export const queryKeys = {
     stats: [...(["platform"] as const), "stats"] as const,
   },
 
+  /**
+   * Approval chains and the requests running through them.
+   *
+   * `awaiting` sits under `all` rather than being it, for the same reason
+   * `company.current` does: a bare `["approvals"]` for the queue would be a
+   * prefix of `chains`, so refreshing somebody's to-do list after a decision
+   * would also discard the admin's chain editor.
+   */
+  approvals: {
+    all: ["approvals"] as const,
+    /** The policy. Invalidated by saving or activating a chain, nothing else. */
+    chains: [...(["approvals"] as const), "chains"] as const,
+    /** What is waiting on me. Changes on every decision anybody makes. */
+    awaiting: [...(["approvals"] as const), "awaiting"] as const,
+    /** Where one invoice has got to. */
+    forInvoice: (invoiceId: string) =>
+      [...(["approvals"] as const), "invoice", invoiceId] as const,
+  },
+
   notifications: {
     all: ["notifications"] as const,
     /**

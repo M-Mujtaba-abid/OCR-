@@ -6,6 +6,14 @@ imported here is invisible to migrations and silently never gets a table.
 """
 
 from app.db.base import Base
+from app.models.approval import (
+    ApprovalChain,
+    ApprovalDecision,
+    ApprovalDecisionRecord,
+    ApprovalRequest,
+    ApprovalRequestStatus,
+    ApprovalStep,
+)
 from app.models.auth_session import AuthSession
 from app.models.company import Company, CompanyOdooConfig, CompanyScopedMixin
 from app.models.invoice_line_match import InvoiceLineMatch, LineMatchStatus
@@ -21,6 +29,12 @@ from app.models.user import User, UserRole
 
 __all__ = [
     "Base",
+    "ApprovalChain",
+    "ApprovalDecision",
+    "ApprovalDecisionRecord",
+    "ApprovalRequest",
+    "ApprovalRequestStatus",
+    "ApprovalStep",
     "AuthSession",
     "BatchStatus",
     "Company",

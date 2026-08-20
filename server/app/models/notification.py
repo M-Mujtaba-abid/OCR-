@@ -44,6 +44,12 @@ class NotificationType(str, enum.Enum):
     INVOICE_CORRECTED = "invoice_corrected"
     INVOICE_REJECTED = "invoice_rejected"
     INVOICE_PUSHED = "invoice_pushed"
+    #: Approval chains. Note these are addressed by the request's step snapshot,
+    #: never by role — `notify_admins` resolves ADMIN only and would tell the
+    #: wrong people it was their turn.
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_GRANTED = "approval_granted"
+    APPROVAL_DECLINED = "approval_declined"
 
 
 class Notification(UUIDPrimaryKeyMixin, CompanyScopedMixin, Base):

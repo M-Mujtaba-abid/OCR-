@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { useAwaitingMe } from "@/hooks/approval/useApprovals.hooks";
 import { useAuth, useLogout } from "@/hooks/auth/useAuth.hooks";
 import { useCompany } from "@/hooks/company/useCompany.hooks";
 import {
@@ -22,6 +23,22 @@ export function Header() {
   const logout = useLogout();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // How many approvals are waiting on this person, for the badge beside the
+  // link. Shares its query key with the Approvals page, so the two are one
+  // cached read rather than two requests.
+  //
+  // Above the early return, not beside the code that uses it: every hook in
+  // this component has to run on every render, and the `return null` below is
+  // exactly the branch that would stop this one.
+  //
+  // Disabled rather than skipped for the platform owner and the signed-out —
+  // they belong to no company, so the endpoint has none to scope by and
+  // answers 403.
+  const awaiting = useAwaitingMe(
+    isAuthenticated && !!user && !isPlatformOwner(user),
+  );
+  const awaitingCount = awaiting.data?.length ?? 0;
 
   // Navigation is rendered only for authenticated users — showing links that
   // immediately bounce to /login is worse than not showing them.
@@ -78,6 +95,15 @@ export function Header() {
                   ].join(" ")}
                 >
                   {link.label}
+                  {link.href === "/approvals" && awaitingCount > 0 && (
+                    // Rendered only when there is something waiting. A "0"
+                    // sitting in the header permanently is a number people stop
+                    // reading, which is the opposite of what a queue badge is
+                    // for.
+                    <span className="ml-1.5 inline-flex min-w-[18px] items-center justify-center rounded-full bg-sky-600 px-1 text-[10px] font-semibold leading-[18px] text-white dark:bg-sky-500">
+                      {awaitingCount > 99 ? "99+" : awaitingCount}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -152,6 +178,11 @@ export function Header() {
                 className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-900"
               >
                 {link.label}
+                {link.href === "/approvals" && awaitingCount > 0 && (
+                  <span className="ml-1.5 inline-flex min-w-[18px] items-center justify-center rounded-full bg-sky-600 px-1 text-[10px] font-semibold leading-[18px] text-white dark:bg-sky-500">
+                    {awaitingCount > 99 ? "99+" : awaitingCount}
+                  </span>
+                )}
               </Link>
             ))}
           </nav>

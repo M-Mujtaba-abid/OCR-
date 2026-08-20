@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
+import { ApprovalPanel } from "@/components/invoices/ApprovalPanel";
 import { CreatePurchaseOrder } from "@/components/invoices/CreatePurchaseOrder";
 import { CreateVendorBill } from "@/components/invoices/CreateVendorBill";
 import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
@@ -356,6 +357,12 @@ export default function InvoiceReviewPage() {
         confirming={confirm.isPending}
         disabled={busy}
       />
+
+      {/* ------------------------------------------------------- approval */}
+      {/* Before the billing panel, because it is the thing that decides
+          whether billing is possible at all. Renders nothing for a company
+          that does not gate its bills. */}
+      <ApprovalPanel invoice={invoice} />
 
       {/* ----------------------------------------------------- create a bill */}
       {/* After the match it depends on, before the fallback for when there

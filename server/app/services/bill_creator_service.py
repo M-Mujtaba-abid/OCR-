@@ -42,7 +42,11 @@ from rapidfuzz import fuzz
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import InvoiceNotReadyError, OverBilledError
+from app.core.exceptions import (
+    ApprovalExceededError,
+    InvoiceNotReadyError,
+    OverBilledError,
+)
 from app.lib.logging import get_logger
 from app.models.match_history import InvoiceStatus, MatchHistory
 from app.models.notification import NotificationType
@@ -55,6 +59,7 @@ from app.schemas.odoo import (
     OdooExistingBill,
     OdooPurchaseOrderLine,
 )
+from app.services.approval_service import ApprovalService
 from app.services.matching_engine import normalise_vendor
 from app.services.notification_service import NotificationService
 from app.services.odoo_service import (
@@ -251,6 +256,54 @@ def check_over_billing(
         "This would bill more than the order has left. "
         + "; ".join(problems)
         + ". Reduce the quantities, or raise a separate order for the excess."
+    )
+
+
+def check_exceeds_approval(
+    submitted: list[dict[str, Any]], approved: list[dict[str, Any]]
+) -> str | None:
+    """The message explaining what exceeds what was approved, or None.
+
+    The sibling of `check_over_billing`, and needed for the same class of reason
+    a purchase order has a ceiling. Quantities stay editable right up to the
+    moment the bill is submitted, so approval of an *invoice* is worth very
+    little unless it is also approval of an *amount*: without this, a chain
+    signed off at one figure can be billed at another by whoever submits it, and
+    every approver's screen would have shown the smaller number.
+
+    Same shape as its sibling — summed per line first, message-producing rather
+    than raising, every offending line named — for the same reasons.
+
+    A line absent from the approved set is an over-claim of its whole quantity,
+    not something to skip: submitting an extra line is exactly how you would
+    bill for goods nobody agreed to.
+    """
+    ceiling: dict[int, float] = {}
+    for line in approved:
+        po_line_id = int(line["po_line_id"])
+        ceiling[po_line_id] = ceiling.get(po_line_id, 0.0) + float(line["quantity"])
+
+    wanted: dict[int, float] = {}
+    labels: dict[int, str] = {}
+    for line in submitted:
+        po_line_id = int(line["po_line_id"])
+        wanted[po_line_id] = wanted.get(po_line_id, 0.0) + float(line["quantity"])
+        labels.setdefault(po_line_id, str(line.get("description") or f"line {po_line_id}"))
+
+    problems: list[str] = []
+    for po_line_id, quantity in sorted(wanted.items()):
+        allowed = ceiling.get(po_line_id, 0.0)
+        if quantity - allowed > QTY_EPSILON:
+            problems.append(
+                f"{labels[po_line_id]}: {quantity:g} asked for, {allowed:g} approved"
+            )
+
+    if not problems:
+        return None
+    return (
+        "This bill asks for more than the approvers agreed to. "
+        + "; ".join(problems)
+        + ". Reduce the quantities, or request approval again for the new amount."
     )
 
 
@@ -483,6 +536,70 @@ async def _billable_order(odoo: OdooService, invoice: MatchHistory):
     return order
 
 
+async def quote_for_approval(
+    db: AsyncSession,
+    *,
+    invoice: MatchHistory,
+    po_id: int,
+    lines: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Price the lines an approval is being asked for, against Odoo.
+
+    Runs the same read-only half of the ladder `create_bill_for_invoice` runs —
+    the order re-read, line ownership, the over-billing ceiling — so asking for
+    approval fails on the same problems billing would, while it is still a
+    person's own click rather than three signatures later.
+
+    Returns the lines with unit price and tax rate attached. Those are frozen
+    into `lines_snapshot`, which is what every approver's screen then renders:
+    one Odoo read here means the second approver sees exactly the figures the
+    first one did, and the record says what was actually agreed rather than what
+    prices happened to be when somebody last looked.
+    """
+    if not lines:
+        raise InvoiceNotReadyError("An approval needs at least one line.")
+
+    confirmed = invoice.final_po_id or invoice.matched_po_id
+    if confirmed is not None and po_id != confirmed:
+        raise InvoiceNotReadyError(
+            f"This invoice is matched to purchase order {confirmed}, not "
+            f"{po_id}. Change the match on the review screen first.",
+            code="PO_MISMATCH",
+        )
+
+    odoo = await odoo_for_invoice(db, invoice)
+    order = await _billable_order(odoo, invoice)
+
+    by_id = {line.id: line for line in order.lines}
+    strays = [
+        str(line["po_line_id"]) for line in lines if int(line["po_line_id"]) not in by_id
+    ]
+    if strays:
+        raise InvoiceNotReadyError(
+            f"Line {', '.join(strays)} is not part of {order.name}. Reopen the "
+            f"preview — the order has changed since it was built.",
+            code="PO_LINE_MISMATCH",
+        )
+
+    problem = check_over_billing(lines, by_id)
+    if problem:
+        raise OverBilledError(problem)
+
+    priced: list[dict[str, Any]] = []
+    for line in lines:
+        po_line = by_id[int(line["po_line_id"])]
+        priced.append(
+            {
+                "po_line_id": po_line.id,
+                "quantity": float(line["quantity"]),
+                "description": po_line.product_name or po_line.name or "",
+                "unit_price": float(po_line.price_unit or 0.0),
+                "tax_rate": tax_rate_of(po_line),
+            }
+        )
+    return priced
+
+
 # ---------------------------------------------------------------------------
 # Creation
 # ---------------------------------------------------------------------------
@@ -535,6 +652,16 @@ async def create_bill_for_invoice(
             code="PO_MISMATCH",
         )
 
+    # The approval chain, if this company runs one. Here — inside the billing
+    # path — rather than as a route guard, because a permission answers who MAY
+    # bill and this answers whether it is time. A chain enforced by hiding a
+    # button is a chain that gets bypassed on the first busy afternoon.
+    #
+    # One indexed row read, so it sits with the local checks and still costs
+    # nothing against the Odoo round trips below. Returns None, and changes
+    # nothing, for a company with no active chain.
+    approval = await ApprovalService(db).gate_for_billing(invoice)
+
     # Resolved from the invoice, so every Odoo call below — the duplicate
     # search, the receipt, the bill itself — goes to the company that owns it.
     odoo = await odoo_for_invoice(db, invoice)
@@ -561,6 +688,15 @@ async def create_bill_for_invoice(
     problem = check_over_billing(lines, by_id)
     if problem:
         raise OverBilledError(problem)
+
+    # The other ceiling: what the approvers actually agreed to. The order may
+    # have room for these quantities and the chain still not have sanctioned
+    # them — quantities stay editable after the last signature, so this is what
+    # stops a bill approved at one figure from going out at another.
+    if approval is not None:
+        exceeded = check_exceeds_approval(lines, approval.lines_snapshot)
+        if exceeded:
+            raise ApprovalExceededError(exceeded)
 
     bill_ref = (ref or invoice.extracted_invoice_no or "").strip() or None
     bill_date = resolve_invoice_date(

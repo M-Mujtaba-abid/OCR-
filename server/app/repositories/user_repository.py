@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -170,6 +171,28 @@ class UserRepository:
             User.company_id == company_id,
         )
         return list((await self.db.execute(stmt)).scalars().all())
+
+    async def filter_active_ids(
+        self, user_ids: Sequence[uuid.UUID], *, company_id: uuid.UUID
+    ) -> set[uuid.UUID]:
+        """Which of these are active users of THIS company.
+
+        Written as a filter returning a set rather than a boolean "are they all
+        valid", because the caller — approval chain validation — has to name the
+        ones that are not. "One of these approvers does not work here" is not
+        something an admin can act on.
+
+        An empty input short-circuits: `IN ()` is not valid SQL, and asking is
+        pointless anyway.
+        """
+        if not user_ids:
+            return set()
+        stmt = select(User.id).where(
+            User.id.in_(set(user_ids)),
+            User.is_active.is_(True),
+            User.company_id == company_id,
+        )
+        return set((await self.db.execute(stmt)).scalars().all())
 
     async def count_by_role(self, *, company_id: uuid.UUID) -> dict[UserRole, int]:
         """One GROUP BY rather than three COUNTs.

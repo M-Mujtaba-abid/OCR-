@@ -57,6 +57,17 @@ export const STAGES: readonly Stage[] = [
     ink: "text-amber-600 dark:text-amber-400",
   },
   {
+    id: "awaiting_approval",
+    label: "Awaiting approval",
+    hint: "Sent through the approval chain — waiting on a person, not on us",
+    statuses: ["pending_approval"],
+    // Sky rather than another amber: "needs review" and "awaiting approval" are
+    // both waiting on a human, and two ambers side by side would read as one
+    // bar. Sky sits clear of amber, indigo and red in both modes.
+    fill: "bg-sky-600 dark:bg-sky-500",
+    ink: "text-sky-600 dark:text-sky-400",
+  },
+  {
     id: "no_match",
     label: "No match",
     hint: "No purchase order fit — assign one, or raise a new PO",
@@ -122,6 +133,7 @@ export const STATUS_ORDER: readonly InvoiceStatus[] = [
   "matching",
   "match_failed",
   "pending_review",
+  "pending_approval",
   "no_match",
   "confirmed",
   "corrected",

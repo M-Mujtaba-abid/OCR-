@@ -32,6 +32,14 @@ export type Permission =
   /** Create the vendor bill. Admin only: it is the step where money leaves. */
   | "invoice.bill"
   | "invoice.delete"
+  /**
+   * Writing the approval policy — which rungs exist and who is on them.
+   *
+   * Note there is no permission to APPROVE. Who may decide a given step is
+   * answered by that request's own snapshot, so a company can put its receiving
+   * clerk on a rung without handing them anything else an admin holds.
+   */
+  | "approval.configure"
   | "system.admin"
   /** The platform owner's ONLY grant beyond reading their own account. */
   | "platform.admin";

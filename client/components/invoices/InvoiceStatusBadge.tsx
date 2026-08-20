@@ -59,6 +59,13 @@ const PRESENTATION: Record<
     tone: "warning",
     hint: "A purchase order was suggested. Somebody has to confirm it.",
   },
+  pending_approval: {
+    label: "Awaiting sign-off",
+    // Waiting on a person, like "Needs review" — but on a named approver rather
+    // than on whoever opens the queue, which is why it is not "warning".
+    tone: "accent",
+    hint: "Sent through the approval chain. Waiting on an approver.",
+  },
   no_match: {
     label: "No match",
     tone: "warning",

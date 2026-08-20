@@ -64,6 +64,11 @@ class InvoiceStatus(str, enum.Enum):
     # existing order matched it. Terminal here, but not in Odoo: what was
     # created is an RFQ somebody still has to confirm there.
     PO_CREATED = "po_created"
+    # Somebody asked for the bill and an approval chain is running. The status
+    # the invoice held on the way in is kept on the request and restored when
+    # the chain finishes, whichever way it goes — so this is a detour, not a
+    # step, and nothing downstream should treat it as a new resting place.
+    PENDING_APPROVAL = "pending_approval"
     PUSHED = "pushed"
 
 
@@ -76,6 +81,10 @@ OPEN_STATUSES: frozenset[InvoiceStatus] = frozenset(
         InvoiceStatus.MATCH_FAILED,
         InvoiceStatus.PENDING_REVIEW,
         InvoiceStatus.NO_MATCH,
+        # Waiting on a person is still open work. Leaving it out would let an
+        # invoice sit in an approval chain nobody is chasing while the dashboard
+        # counts it as finished.
+        InvoiceStatus.PENDING_APPROVAL,
     }
 )
 

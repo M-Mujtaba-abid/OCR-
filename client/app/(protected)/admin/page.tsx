@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { ApprovalsPanel } from "@/components/admin/ApprovalsPanel";
 import { OdooPanel } from "@/components/admin/OdooPanel";
 import { UsersPanel } from "@/components/admin/UsersPanel";
 import { PipelineBar } from "@/components/charts/PipelineBar";
@@ -22,7 +23,13 @@ import { useUserStats } from "@/hooks/user/useUsers.hooks";
 import { ROLE_LABEL } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/user.type";
 
-type TabId = "overview" | "invoices" | "users" | "history" | "odoo";
+type TabId =
+  | "overview"
+  | "invoices"
+  | "users"
+  | "history"
+  | "approvals"
+  | "odoo";
 
 /** Least to most privileged, so the shape of the org reads top to bottom. */
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
@@ -60,6 +67,12 @@ export default function AdminPage() {
       ? [{ id: "users" as const, label: "Users", badge: userStats?.total }]
       : []),
     { id: "history", label: "History", badge: billed },
+    // Who has to sign off a vendor bill. Behind approval.configure rather
+    // than system.admin: writing the policy is an administrator's job, but it
+    // is a different one from holding the ERP credentials.
+    ...(can("approval.configure")
+      ? [{ id: "approvals" as const, label: "Approvals" }]
+      : []),
     // Credentials are an administrator's business.
     ...(can("system.admin")
       ? [{ id: "odoo" as const, label: "Odoo" }]
@@ -193,6 +206,10 @@ export default function AdminPage() {
 
         <TabPanel id="history" active={tab === "history"}>
           <BillHistoryPanel />
+        </TabPanel>
+
+        <TabPanel id="approvals" active={tab === "approvals"}>
+          <ApprovalsPanel />
         </TabPanel>
 
         <TabPanel id="odoo" active={tab === "odoo"}>

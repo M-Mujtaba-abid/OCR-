@@ -97,6 +97,14 @@ export interface NavLink {
  */
 const NAV_LINKS: readonly NavLink[] = [
   { href: "/dashboard", label: "Dashboard", minRole: "member" },
+  // "member", and that is the point rather than an oversight. An approval chain
+  // can name anybody — a receiving clerk confirming the goods arrived is the
+  // case the feature exists for — and /admin starts at manager. Without this
+  // link such a person is told it is their turn and has nowhere to go.
+  //
+  // Usually empty, like the notification bell, and that is fine: a queue you
+  // can trust to be empty is worth more than one you have to go looking for.
+  { href: "/approvals", label: "Approvals", minRole: "member" },
   // Reachable by managers too. What separates them from an admin is which
   // tabs the console renders, not whether they may open it — see the tab list
   // in app/(protected)/admin/page.tsx, which filters by permission.

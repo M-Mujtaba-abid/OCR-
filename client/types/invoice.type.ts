@@ -16,6 +16,14 @@ export type InvoiceStatus =
   | "rejected"
   /** A draft purchase order was created in Odoo from this invoice. */
   | "po_created"
+  /**
+   * Somebody asked for the bill and an approval chain is running.
+   *
+   * A detour, not a step: the status the invoice held on the way in is kept on
+   * the approval request and restored when the chain ends, whichever way it
+   * goes. Nothing should treat this as a resting place.
+   */
+  | "pending_approval"
   | "pushed";
 
 export interface InvoiceUploader {
@@ -461,6 +469,9 @@ export const TRANSIENT_STATUSES = new Set<InvoiceStatus>([
   "ocr_queued",
   "ocr_processing",
   "matching",
+  // `pending_approval` is deliberately NOT here. The server is not working on
+  // it — a person is — so polling would spin for as long as somebody takes to
+  // read their queue.
 ]);
 
 /**
@@ -515,7 +526,10 @@ export type NotificationType =
   | "invoice_confirmed"
   | "invoice_corrected"
   | "invoice_rejected"
-  | "invoice_pushed";
+  | "invoice_pushed"
+  | "approval_requested"
+  | "approval_granted"
+  | "approval_declined";
 
 export interface AppNotification {
   id: string;

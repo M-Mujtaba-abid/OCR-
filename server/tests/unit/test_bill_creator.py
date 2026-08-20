@@ -155,6 +155,11 @@ def odoo(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bcs, "odoo_for_invoice", fake_resolve)
     monkeypatch.setattr(bcs, "MatchHistoryRepository", _FakeRepo)
     monkeypatch.setattr(bcs, "NotificationService", _FakeNotifier)
+    # A company that gates nothing — no active approval chain — which is what
+    # every test in this file is about. That the gate REFUSES when a chain is
+    # running is proved against a real database in tests/test_approvals.py,
+    # because the interesting part of it is rows and constraints.
+    monkeypatch.setattr(bcs, "ApprovalService", _FakeApprovals)
 
     async def fake_download(_key: str) -> bytes:
         return b"%PDF-1.4 scanned invoice"
@@ -642,6 +647,7 @@ def _uuid():
 def _invoice():
     class _Invoice:
         id = _uuid()
+        company_id = _uuid()
         tenant_id = "default"
         file_name = "invoice.pdf"
         file_key = "default/2026/08/invoice.pdf"
@@ -689,4 +695,15 @@ class _FakeNotifier:
         pass
 
     async def notify_user(self, **_: Any) -> None:
+        return None
+
+
+class _FakeApprovals:
+    def __init__(self, _db: Any) -> None:
+        pass
+
+    async def gate_for_billing(self, _invoice: Any) -> None:
+        """None means "this company has no active chain", so billing is
+        unchanged — the behaviour every company has until an admin switches a
+        chain on, and the one these tests describe."""
         return None

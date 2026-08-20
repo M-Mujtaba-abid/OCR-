@@ -35,6 +35,7 @@ from fastapi import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.controllers.approval_controller import ApprovalController
 from app.controllers.invoice_controller import InvoiceController
 from app.db.session import get_db
 from app.dependencies.auth import require_permission, user_permissions
@@ -42,6 +43,11 @@ from app.dependencies.tenancy import CurrentCompany
 from app.lib.responses import ApiErrorResponse, ApiResponse, PaginatedData
 from app.models.match_history import InvoiceStatus
 from app.models.user import User
+from app.schemas.approval import (
+    ApprovalRequestRead,
+    InvoiceApprovalRead,
+    RequestApprovalRequest,
+)
 from app.schemas.invoice import (
     BillHistoryItem,
     BillPreview,
@@ -73,7 +79,19 @@ def get_invoice_controller(
     return InvoiceController(InvoiceService(db))
 
 
+def get_approval_controller(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ApprovalController:
+    return ApprovalController(db)
+
+
 Controller = Annotated[InvoiceController, Depends(get_invoice_controller)]
+# The two approval endpoints that are addressed by invoice rather than by
+# request live on this router, because that is where a client already is when it
+# needs them. The controller behind them is the approvals one.
+ApprovalControllerDep = Annotated[
+    ApprovalController, Depends(get_approval_controller)
+]
 CanCreate = Annotated[User, Depends(require_permission("invoice.create"))]
 CanRead = Annotated[User, Depends(require_permission("invoice.read"))]
 CanReadAll = Annotated[User, Depends(require_permission("invoice.read.all"))]
@@ -500,6 +518,52 @@ async def create_vendor_bill(
     return await controller.create_bill(
         invoice_id=invoice_id, user=user, payload=payload
     )
+
+
+@router.post(
+    "/{invoice_id}/request-approval",
+    response_model=ApiResponse[ApprovalRequestRead],
+    summary="Send this bill through the company's approval chain",
+    responses=ERROR_RESPONSES,
+)
+async def request_approval(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    payload: RequestApprovalRequest,
+    approvals: ApprovalControllerDep,
+    user: CanReview,
+) -> ApiResponse[ApprovalRequestRead]:
+    """`invoice.review`, not `invoice.bill` — asking is the reviewer's job.
+
+    Takes the same `po_id` and `lines` the create-bill call would, deliberately.
+    The lines are priced against Odoo and frozen onto the request, so what each
+    approver sees and what the biller may later submit are the same numbers: an
+    approval that did not pin the amount could be signed off at one figure and
+    billed at another.
+    """
+    return await approvals.request_approval(
+        invoice_id=invoice_id, user=user, payload=payload
+    )
+
+
+@router.get(
+    "/{invoice_id}/approval",
+    response_model=ApiResponse[InvoiceApprovalRead],
+    summary="Where this invoice has got to in its approval chain",
+    responses=ERROR_RESPONSES,
+)
+async def invoice_approval(
+    invoice_id: Annotated[uuid.UUID, Path()],
+    approvals: ApprovalControllerDep,
+    user: CanReview,
+) -> ApiResponse[InvoiceApprovalRead]:
+    """The latest request, whatever became of it — a declined one is still the
+    honest answer to "where did this get to" until somebody submits another —
+    plus whether this company gates billing at all.
+
+    Both in one response because the caller who most needs the second fact is a
+    manager, and reading the chain list takes `approval.configure`, which they
+    do not hold."""
+    return await approvals.for_invoice(invoice_id=invoice_id, user=user)
 
 
 @router.post(
