@@ -1,6 +1,6 @@
 """Odoo passthrough routes.
 
-Read-only and gated on `invoice.approve`, because the purchase order list is
+Read-only and gated on `invoice.review`, because the purchase order list is
 commercial data — who is buying what, at what price — not something a member
 uploading their own invoice should be able to enumerate.
 
@@ -32,7 +32,7 @@ from app.services.odoo_service import odoo_for
 
 router = APIRouter(prefix="/odoo", tags=["odoo"])
 
-CanApprove = Annotated[User, Depends(require_permission("invoice.approve"))]
+CanReview = Annotated[User, Depends(require_permission("invoice.review"))]
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
@@ -47,11 +47,11 @@ ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
 @router.get(
     "/connection",
     response_model=ApiResponse[dict[str, Any]],
-    summary="Verify your company's Odoo credentials (requires invoice.approve)",
+    summary="Verify your company's Odoo credentials (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def check_connection(
-    _actor: CanApprove, company: CurrentCompany, db: DbSession
+    _actor: CanReview, company: CurrentCompany, db: DbSession
 ) -> ApiResponse[dict[str, Any]]:
     """Authenticate against this company's Odoo and report what answered.
 
@@ -68,11 +68,11 @@ async def check_connection(
 @router.get(
     "/purchase-orders",
     response_model=ApiResponse[list[OdooPurchaseOrder]],
-    summary="Open purchase orders awaiting a bill (requires invoice.approve)",
+    summary="Open purchase orders awaiting a bill (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def list_purchase_orders(
-    _actor: CanApprove,
+    _actor: CanReview,
     company: CurrentCompany,
     db: DbSession,
     limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
@@ -87,12 +87,12 @@ async def list_purchase_orders(
 @router.get(
     "/purchase-orders/{po_id}",
     response_model=ApiResponse[OdooPurchaseOrder | None],
-    summary="One purchase order with its lines (requires invoice.approve)",
+    summary="One purchase order with its lines (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def get_purchase_order(
     po_id: Annotated[int, Path(gt=0)],
-    _actor: CanApprove,
+    _actor: CanReview,
     company: CurrentCompany,
     db: DbSession,
 ) -> ApiResponse[OdooPurchaseOrder | None]:

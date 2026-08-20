@@ -28,7 +28,7 @@ type TabId = "overview" | "invoices" | "users" | "history" | "odoo";
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
 
 export default function AdminPage() {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const company = useCompany();
   const [tab, setTab] = useState<TabId>("overview");
 
@@ -47,12 +47,23 @@ export default function AdminPage() {
   // request for a panel nobody has opened.
   const billed = invoiceStats?.by_status.pushed;
 
+  // Filtered by PERMISSION, not by role. A manager and an admin open the same
+  // console; what differs is what is in it. Gating the whole route by role was
+  // how the manager ended up with an API full of capabilities and no screen
+  // that offered any of them.
   const tabs: readonly TabItem<TabId>[] = [
     { id: "overview", label: "Overview" },
     { id: "invoices", label: "Invoices", badge: invoiceStats?.total },
-    { id: "users", label: "Users", badge: userStats?.total },
+    // `user.read` — a manager sees the team; UsersPanel gates its own controls
+    // on user.create / user.update, so it renders read-only for them.
+    ...(can("user.read")
+      ? [{ id: "users" as const, label: "Users", badge: userStats?.total }]
+      : []),
     { id: "history", label: "History", badge: billed },
-    { id: "odoo", label: "Odoo" },
+    // Credentials are an administrator's business.
+    ...(can("system.admin")
+      ? [{ id: "odoo" as const, label: "Odoo" }]
+      : []),
   ];
 
   return (
@@ -168,7 +179,9 @@ export default function AdminPage() {
         <TabPanel id="invoices" active={tab === "invoices"}>
           <InvoicesPanel
             scope="all"
-            canDelete
+            // Was hard-coded true, which handed the Delete button to anyone who
+            // could open this page — now including managers.
+            canDelete={can("invoice.delete")}
             showPipeline
             emptyMessage="No invoices have been uploaded yet."
           />

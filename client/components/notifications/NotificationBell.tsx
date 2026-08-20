@@ -10,7 +10,6 @@ import {
   useUnreadCount,
 } from "@/hooks/notification/useNotifications.hooks";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
-import { isAdmin } from "@/lib/auth/roles";
 import { timeAgo } from "@/lib/format";
 import type { AppNotification, NotificationType } from "@/types/invoice.type";
 
@@ -27,7 +26,7 @@ import type { AppNotification, NotificationType } from "@/types/invoice.type";
  * something?" needs somewhere to click even when the answer is no.
  */
 export function NotificationBell({ className }: { className?: string }) {
-  const { user, isAuthenticated } = useAuth();
+  const { can, isAuthenticated } = useAuth();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -123,10 +122,14 @@ export function NotificationBell({ className }: { className?: string }) {
                 <NotificationRow
                   key={item.id}
                   item={item}
+                  // The permission, not the role. It was `isAdmin`, which left
+                  // managers with notifications about invoices they are
+                  // entitled to read and no way to open one.
+                  //
                   // Resolved once here rather than per row: every row asking
                   // for the session would be the same cached read repeated a
                   // dozen times for an answer that cannot differ between them.
-                  canOpenInvoices={isAdmin(user)}
+                  canOpenInvoices={can("invoice.read.all")}
                   onNavigate={() => setOpen(false)}
                 />
               ))}
@@ -163,8 +166,9 @@ function NotificationRow({
 }) {
   const markRead = useMarkNotificationRead();
 
-  // Only admins have an invoice detail route to open. For everybody else the
-  // row still marks itself read — a link that 403s is worse than no link.
+  // Only somebody who may read every invoice has a detail route to open. For
+  // everybody else the row still marks itself read — a link that 403s is worse
+  // than no link.
   const href =
     item.match_history_id && canOpenInvoices
       ? `/admin/invoices/${item.match_history_id}`

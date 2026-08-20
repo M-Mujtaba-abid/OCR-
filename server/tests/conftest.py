@@ -130,6 +130,24 @@ async def admin_user(db: AsyncSession, company: Company, password: str) -> User:
 
 
 @pytest_asyncio.fixture
+async def manager_user(db: AsyncSession, company: Company, password: str) -> User:
+    """A manager in the same company as `admin_user`.
+
+    The role that runs the queue without being able to bill — the difference
+    the invoice routes now enforce with two separate permissions.
+    """
+    user = await UserRepository(db).create(
+        company_id=company.id,
+        email=f"manager-{uuid.uuid4().hex[:12]}@example.com",
+        password_hash=hash_password(password),
+        full_name="Company Manager",
+        role=UserRole.MANAGER,
+    )
+    await db.commit()
+    return user
+
+
+@pytest_asyncio.fixture
 async def inactive_user(db: AsyncSession, company: Company, password: str) -> User:
     user = await UserRepository(db).create(
         company_id=company.id,

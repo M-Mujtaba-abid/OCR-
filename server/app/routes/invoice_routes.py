@@ -4,6 +4,12 @@ Two read scopes, gated by different permissions:
 
     invoice.read      -> your own uploads          (member, manager, admin)
     invoice.read.all  -> everybody's uploads       (manager, admin)
+    invoice.review    -> match, confirm, reject    (manager, admin)
+    invoice.bill      -> create the vendor bill    (admin only)
+
+The last two used to be one permission. They were split because they are not
+one decision: getting an invoice ready is review work, and billing it is the
+step where money leaves. Whoever reviews should not also be able to pay.
 
 `/my` and `/admin/queue` are separate endpoints rather than one endpoint that
 branches on role. A single endpoint returning different data to different
@@ -391,13 +397,13 @@ async def start_upload_extraction(
     "/{invoice_id}/match",
     response_model=ApiResponse[JobAccepted],
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Match against Odoo purchase orders (requires invoice.approve)",
+    summary="Match against Odoo purchase orders (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def start_matching(
     invoice_id: Annotated[uuid.UUID, Path()],
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
     background: BackgroundTasks,
 ) -> ApiResponse[JobAccepted]:
     return await controller.start_matching(
@@ -408,14 +414,14 @@ async def start_matching(
 @router.post(
     "/{invoice_id}/confirm",
     response_model=ApiResponse[InvoiceDetail],
-    summary="Accept or override the matched purchase order",
+    summary="Accept or override the matched purchase order (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def confirm_invoice_match(
     invoice_id: Annotated[uuid.UUID, Path()],
     payload: ConfirmMatchRequest,
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
 ) -> ApiResponse[InvoiceDetail]:
     return await controller.confirm(invoice_id=invoice_id, user=user, payload=payload)
 
@@ -429,7 +435,7 @@ async def confirm_invoice_match(
 async def po_preview(
     invoice_id: Annotated[uuid.UUID, Path()],
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
 ) -> ApiResponse[PoPreview]:
     return await controller.po_preview(invoice_id=invoice_id, user=user)
 
@@ -437,14 +443,14 @@ async def po_preview(
 @router.post(
     "/{invoice_id}/create-po",
     response_model=ApiResponse[InvoiceDetail],
-    summary="Create a draft purchase order in Odoo from this invoice",
+    summary="Create a draft purchase order in Odoo (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def create_purchase_order(
     invoice_id: Annotated[uuid.UUID, Path()],
     payload: CreatePoRequest,
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
 ) -> ApiResponse[InvoiceDetail]:
     """Writes to Odoo. The order is created in draft, so it still needs
     confirming there — and the mapping in the payload is the one a reviewer
@@ -461,7 +467,7 @@ async def create_purchase_order(
 async def bill_preview(
     invoice_id: Annotated[uuid.UUID, Path()],
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
 ) -> ApiResponse[BillPreview]:
     """Read-only. Proposes which order line each invoice line means and shows
     what is left to bill on each — one order is billed across several invoices
@@ -472,14 +478,14 @@ async def bill_preview(
 @router.post(
     "/{invoice_id}/create-bill",
     response_model=ApiResponse[CreateBillResult],
-    summary="Create a draft vendor bill in Odoo from this invoice",
+    summary="Create a draft vendor bill in Odoo (requires invoice.bill)",
     responses=ERROR_RESPONSES,
 )
 async def create_vendor_bill(
     invoice_id: Annotated[uuid.UUID, Path()],
     payload: CreateBillRequest,
     controller: Controller,
-    user: CanApprove,
+    user: CanBill,
 ) -> ApiResponse[CreateBillResult]:
     """Writes to Odoo, and this is the write that moves money.
 
@@ -499,13 +505,13 @@ async def create_vendor_bill(
 @router.post(
     "/{invoice_id}/reject",
     response_model=ApiResponse[InvoiceDetail],
-    summary="Reject an invoice with a reason",
+    summary="Reject an invoice with a reason (requires invoice.review)",
     responses=ERROR_RESPONSES,
 )
 async def reject_invoice_route(
     invoice_id: Annotated[uuid.UUID, Path()],
     payload: RejectInvoiceRequest,
     controller: Controller,
-    user: CanApprove,
+    user: CanReview,
 ) -> ApiResponse[InvoiceDetail]:
     return await controller.reject(invoice_id=invoice_id, user=user, payload=payload)

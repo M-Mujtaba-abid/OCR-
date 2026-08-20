@@ -27,7 +27,10 @@ export type Permission =
   | "invoice.read"
   | "invoice.read.all"
   | "invoice.create"
-  | "invoice.approve"
+  /** Match, confirm, reject, raise a purchase order — manager and admin. */
+  | "invoice.review"
+  /** Create the vendor bill. Admin only: it is the step where money leaves. */
+  | "invoice.bill"
   | "invoice.delete"
   | "system.admin"
   /** The platform owner's ONLY grant beyond reading their own account. */

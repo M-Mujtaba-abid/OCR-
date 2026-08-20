@@ -44,14 +44,18 @@ export const ROLE_DESCRIPTION: Record<UserRole, string> = {
 /**
  * Where each role lands after signing in.
  *
- * Managers share the member dashboard on purpose — their extra capability is
- * approval, which appears as additional sections inside that page rather than
- * as a separate destination. Only admin gets its own route, because user
- * management has nothing to do with the invoice workflow.
+ * A manager lands on the console, not the member dashboard. Their job is the
+ * company's queue — reviewing what other people uploaded — and sending them to
+ * a page that only lists their own uploads is why the role appeared to do
+ * nothing at all for as long as it did.
+ *
+ * (This comment used to claim a manager's approval work "appears as additional
+ * sections inside" the dashboard. It never did. No such sections were built,
+ * and the claim outlived anyone checking it.)
  */
 export const ROLE_HOME: Record<UserRole, string> = {
   member: "/dashboard",
-  manager: "/dashboard",
+  manager: "/admin",
   admin: "/admin",
   // Its own destination, because the platform owner has no company dashboard
   // to land on — /dashboard and /admin would both 403 for them.
@@ -93,7 +97,10 @@ export interface NavLink {
  */
 const NAV_LINKS: readonly NavLink[] = [
   { href: "/dashboard", label: "Dashboard", minRole: "member" },
-  { href: "/admin", label: "Admin", minRole: "admin" },
+  // Reachable by managers too. What separates them from an admin is which
+  // tabs the console renders, not whether they may open it — see the tab list
+  // in app/(protected)/admin/page.tsx, which filters by permission.
+  { href: "/admin", label: "Admin", minRole: "manager" },
 ] as const;
 
 /** The platform owner's nav. Separate because it shares no link with the rest. */
@@ -106,7 +113,15 @@ export function navLinksFor(user: User | null | undefined): NavLink[] {
   // Not a superset: the platform owner gets the platform's links INSTEAD of
   // the company ones, because every company link would 403 for them.
   if (isPlatformOwner(user)) return [...PLATFORM_LINKS];
-  return NAV_LINKS.filter((link) => atLeast(user, link.minRole));
+
+  return NAV_LINKS.filter((link) => atLeast(user, link.minRole)).map((link) =>
+    // One route, two honest names. A manager opening /admin finds the queue
+    // and no user management, so calling it "Admin" would promise something
+    // that is not there.
+    link.href === "/admin" && user.role === "manager"
+      ? { ...link, label: "Review" }
+      : link,
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -121,7 +136,11 @@ export function navLinksFor(user: User | null | undefined): NavLink[] {
  * instead of being wide open until someone remembers to list it.
  */
 const ROUTE_MIN_ROLE: ReadonlyArray<readonly [string, UserRole]> = [
-  ["/admin", "admin"],
+  // "manager", not "admin". The console is where the queue lives and the queue
+  // is a manager's job; the tabs inside it are filtered by permission, which
+  // is a finer instrument than a whole-route role gate. This prefix also
+  // covers /admin/invoices/[id], the review screen a manager could not reach.
+  ["/admin", "manager"],
   ["/platform", "super_admin"],
 ] as const;
 

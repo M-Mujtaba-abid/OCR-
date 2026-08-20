@@ -10,6 +10,7 @@ import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
 import { MatchCandidates } from "@/components/invoices/MatchCandidates";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import {
   useConfirmMatch,
   useInvoice,
@@ -19,13 +20,50 @@ import {
   useRunOcr,
 } from "@/hooks/invoice/useInvoices.hooks";
 import { money } from "@/lib/format";
-import { TRANSIENT_STATUSES, type InvoiceLine } from "@/types/invoice.type";
+import {
+  TRANSIENT_STATUSES,
+  type InvoiceDetail,
+  type InvoiceLine,
+} from "@/types/invoice.type";
 
 /** Tax for each line, in the order the lines were given. */
 interface LineTax {
   value: number;
   /** True when the invoice taxed the total, not this line, and we spread it. */
   allocated: boolean;
+}
+
+/**
+ * What a reviewer sees in place of the billing panel.
+ *
+ * Only for somebody without `invoice.bill` — a manager. Silence would read as
+ * a missing feature; this says the work is done and who does the next part.
+ */
+function ReadyForBilling({ invoice }: { invoice: InvoiceDetail }) {
+  if (invoice.status === "pushed" || invoice.pushed_to_odoo) {
+    return (
+      <section className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-6 text-sm dark:border-emerald-900 dark:bg-emerald-950/30">
+        <p className="font-medium text-emerald-900 dark:text-emerald-200">
+          Billed in Odoo{invoice.odoo_bill_ref ? `: ${invoice.odoo_bill_ref}` : ""}.
+        </p>
+      </section>
+    );
+  }
+
+  const matched = (invoice.final_po_id ?? invoice.matched_po_id) != null;
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+      <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+        Billing
+      </h2>
+      <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+        {matched
+          ? `Confirmed against ${invoice.matched_po_name ?? "a purchase order"}. An administrator raises the vendor bill in Odoo — billing is kept separate from review.`
+          : "Once this invoice is matched and confirmed, an administrator raises the vendor bill in Odoo."}
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -54,6 +92,7 @@ function taxPerLine(lines: InvoiceLine[], invoiceTax: number | null): LineTax[] 
 
 export default function InvoiceReviewPage() {
   const { id } = useParams<{ id: string }>();
+  const { can } = useAuth();
   const { data: invoice, isLoading, isError } = useInvoice(id);
 
   const openFile = useOpenInvoiceFile();
@@ -320,8 +359,16 @@ export default function InvoiceReviewPage() {
 
       {/* ----------------------------------------------------- create a bill */}
       {/* After the match it depends on, before the fallback for when there
-          was no match to begin with. */}
-      <CreateVendorBill invoice={invoice} />
+          was no match to begin with.
+
+          Billing is where money leaves, so it is the one step a manager does
+          not have. They are told what happens next rather than shown a screen
+          with a section quietly missing from it. */}
+      {can("invoice.bill") ? (
+        <CreateVendorBill invoice={invoice} />
+      ) : (
+        <ReadyForBilling invoice={invoice} />
+      )}
 
       {/* ------------------------------------------------------- create a PO */}
       <CreatePurchaseOrder invoice={invoice} />
