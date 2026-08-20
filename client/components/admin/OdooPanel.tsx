@@ -9,7 +9,9 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import {
+  useDeleteOdoo,
   useDisableOdoo,
+  useEnableOdoo,
   useOdooConfig,
   useSaveOdooConfig,
   useVerifyOdoo,
@@ -59,13 +61,16 @@ function formatDateTime(iso: string): string {
  * the key again. That is the honest presentation of a value nobody can read
  * back, and better than a row of dots pretending it was loaded.
  */
-export function OdooSettingsPanel() {
+export function OdooPanel() {
   const status = useOdooConfig();
   const save = useSaveOdooConfig();
   const verify = useVerifyOdoo();
   const disable = useDisableOdoo();
+  const enable = useEnableOdoo();
+  const remove = useDeleteOdoo();
 
   const [editing, setEditing] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const {
     register: field,
@@ -108,7 +113,17 @@ export function OdooSettingsPanel() {
   function onSubmit(values: Values) {
     save.mutate(
       { ...values, is_enabled: true },
-      { onSuccess: () => setEditing(false) },
+      {
+        onSuccess: () => {
+          setEditing(false);
+          // Saving deliberately does not connect — a typo must not discard
+          // what was just typed. Testing straight afterwards gives the same
+          // "it set itself up" result without that trade: the credentials are
+          // already safe, and the reviewer learns immediately whether they
+          // work rather than finding out at the next match.
+          verify.mutate();
+        },
+      },
     );
   }
 
@@ -135,10 +150,19 @@ export function OdooSettingsPanel() {
         </Alert>
       )}
 
-      {data.using_server_fallback && (
+      {!data.configured && (
         <Alert tone="neutral">
-          This company has no Odoo of its own and is using the one configured on
-          the server. Saving credentials here switches it to yours.
+          Matching and vendor bills will not run until this company&apos;s Odoo
+          is connected. Nothing is shared with any other company — these
+          credentials are yours alone.
+        </Alert>
+      )}
+
+      {data.shared_with_another_company && (
+        <Alert tone="negative">
+          Another company on this platform points at the same Odoo database.
+          That is fine if you meant to share one, and a mistake worth catching
+          if you did not.
         </Alert>
       )}
 
@@ -164,11 +188,12 @@ export function OdooSettingsPanel() {
             </p>
           )}
 
-          <div className="mt-5 flex flex-wrap gap-3">
+          <div className="mt-5 flex flex-wrap items-center gap-3">
             <Button onClick={() => setEditing(true)}>
               {data.configured ? "Replace credentials" : "Connect Odoo"}
             </Button>
-            {data.configured && (
+
+            {data.configured && !confirmingDelete && (
               <>
                 <Button
                   variant="secondary"
@@ -177,7 +202,8 @@ export function OdooSettingsPanel() {
                 >
                   Test connection
                 </Button>
-                {data.is_enabled && (
+
+                {data.is_enabled ? (
                   <Button
                     variant="ghost"
                     onClick={() => disable.mutate()}
@@ -185,7 +211,46 @@ export function OdooSettingsPanel() {
                   >
                     Switch off
                   </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    onClick={() => enable.mutate()}
+                    isLoading={enable.isPending}
+                  >
+                    Switch on
+                  </Button>
                 )}
+
+                <Button variant="ghost" onClick={() => setConfirmingDelete(true)}>
+                  Remove
+                </Button>
+              </>
+            )}
+
+            {/* The same inline confirm the invoice table uses for deletion —
+                one destructive click is never the last word. */}
+            {confirmingDelete && (
+              <>
+                <span className="text-sm text-slate-600 dark:text-slate-400">
+                  Remove these credentials? Your bill history is kept.
+                </span>
+                <Button
+                  variant="danger"
+                  isLoading={remove.isPending}
+                  onClick={() =>
+                    remove.mutate(undefined, {
+                      onSuccess: () => setConfirmingDelete(false),
+                    })
+                  }
+                >
+                  Remove
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => setConfirmingDelete(false)}
+                >
+                  Cancel
+                </Button>
               </>
             )}
           </div>
@@ -266,13 +331,7 @@ function Panel({ children }: { children: React.ReactNode }) {
  * that conflates them tells an administrator their typo is fine.
  */
 function ConnectionBadge({ status }: { status: OdooConfigStatus }) {
-  if (!status.configured) {
-    return status.using_server_fallback ? (
-      <Badge tone="neutral">Using server default</Badge>
-    ) : (
-      <Badge tone="warning">Not connected</Badge>
-    );
-  }
+  if (!status.configured) return <Badge tone="warning">Not connected</Badge>;
   if (!status.is_enabled) return <Badge tone="neutral">Switched off</Badge>;
   if (!status.verified_at) return <Badge tone="warning">Saved, untested</Badge>;
   return <Badge tone="positive">Connected</Badge>;

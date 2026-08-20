@@ -300,20 +300,13 @@ _credentials_lock = threading.Lock()
 _CREDENTIALS_TTL_SECONDS = 300.0
 
 
-def _env_credentials() -> OdooCredentials:
-    """What the environment configures, as one company's credentials.
-
-    The fallback for a company with no stored configuration — which is how the
-    original single-company deployment keeps working untouched while other
-    companies are onboarded around it. When every company has its own row this
-    returns nothing complete and stops being reachable.
-    """
-    return OdooCredentials(
-        base_url=settings.odoo_base_url,
-        database=settings.ODOO_DB,
-        username=settings.ODOO_USERNAME,
-        api_key=settings.ODOO_API_KEY.get_secret_value(),
-    )
+# There is no `_env_credentials()` any more.
+#
+# `ODOO_URL` and friends used to stand in for any company without its own
+# configuration. On a platform running several companies that is not a default —
+# it is one company matching against another's purchase orders. The environment
+# is now read in exactly one place, `scripts/seed_company_odoo.py`, which moved
+# the original deployment's credentials into its own company row.
 
 
 def cache_credentials(company_id: uuid.UUID, credentials: OdooCredentials) -> None:
@@ -1934,11 +1927,17 @@ async def resolve_credentials(
 ) -> OdooCredentials:
     """This company's Odoo credentials, from its own configuration row.
 
-    Falls back to the environment when the company has no row of its own. That
-    fallback is what lets the original single-company deployment keep working
-    untouched while other companies are onboarded around it — and it is safe
-    precisely because it is per company: a company that HAS a row never sees
-    the environment, so onboarding a second company cannot redirect the first.
+    A company with no row is REFUSED. There is no fallback to the environment,
+    and that is the whole point: a fallback means every company that has not
+    configured Odoo yet silently resolves to whichever one the server was
+    deployed against. On a platform running several tenants that is not a
+    convenience — it is one company matching against another's purchase orders
+    and raising bills in their ledger, with nothing on screen to suggest
+    anything is wrong.
+
+    The original single-tenant deployment's credentials were moved into its own
+    row by `scripts/seed_company_odoo.py`, so it kept working across this
+    change without anybody retyping a key.
     """
     cached = cached_credentials(company_id)
     if cached is not None:
@@ -1947,27 +1946,23 @@ async def resolve_credentials(
     config = await CompanyOdooConfigRepository(db).find_for_company(company_id)
 
     if config is None:
-        credentials = _env_credentials()
-        if not credentials.is_complete:
-            raise OdooNotConfiguredError(
-                "This company has no Odoo configured, and no fallback is set "
-                "on the server."
-            )
-        logger.info(
-            "Company %s has no Odoo configuration — using the environment's",
-            company_id,
+        raise OdooNotConfiguredError(
+            "This company has no Odoo connected. An administrator can connect "
+            "one under Admin → Odoo."
         )
-    else:
-        if not config.is_enabled:
-            raise OdooNotConfiguredError(
-                "This company's Odoo connection is switched off."
-            )
-        credentials = OdooCredentials(
-            base_url=config.base_url.strip().rstrip("/"),
-            database=config.database,
-            username=config.username,
-            api_key=decrypt_secret(config.api_key_encrypted),
+
+    if not config.is_enabled:
+        raise OdooNotConfiguredError(
+            "This company's Odoo connection is switched off. An administrator "
+            "can switch it back on under Admin → Odoo."
         )
+
+    credentials = OdooCredentials(
+        base_url=config.base_url.strip().rstrip("/"),
+        database=config.database,
+        username=config.username,
+        api_key=decrypt_secret(config.api_key_encrypted),
+    )
 
     cache_credentials(company_id, credentials)
     return credentials

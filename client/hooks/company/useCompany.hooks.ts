@@ -111,3 +111,42 @@ export function useDisableOdoo() {
     },
   });
 }
+
+/** Switch a previously configured connection back on. */
+export function useEnableOdoo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => companyService.enableOdoo(),
+    onSuccess: () => {
+      toast.success("Odoo switched back on");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.company.odoo });
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.message || "Could not switch Odoo on");
+    },
+  });
+}
+
+/**
+ * Forget the credentials entirely.
+ *
+ * Also invalidates the invoice lists: with no Odoo attached, the actions those
+ * screens offer — match, create bill — will now refuse, and the panels decide
+ * what to show from freshly fetched data.
+ */
+export function useDeleteOdoo() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => companyService.deleteOdoo(),
+    onSuccess: () => {
+      toast.success("Odoo credentials removed");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.company.odoo });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.invoices.lists });
+    },
+    onError: (error: ApiError) => {
+      toast.error(error.message || "Could not remove those credentials");
+    },
+  });
+}

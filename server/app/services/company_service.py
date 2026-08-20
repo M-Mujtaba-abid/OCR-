@@ -13,7 +13,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import secrets
-from app.core.exceptions import OdooError
+from app.core.exceptions import OdooError, OdooNotConfiguredError
 from app.core.secrets import encrypt_secret
 from app.core.tenancy import company_of
 from app.lib.logging import get_logger
@@ -42,13 +42,12 @@ class CompanyService:
         config = await self.configs.find_for_company(company_id)
 
         if config is None:
+            # Not "running on the server's Odoo" any more — there is no such
+            # thing. No configuration means no Odoo, and matching and billing
+            # say so rather than quietly using somebody else's.
             return OdooConfigStatus(
                 configured=False,
                 encryption_available=secrets.is_configured(),
-                # A company with no row of its own runs on whatever the server
-                # has configured. Saying so is the difference between "not set
-                # up" and "set up somewhere you cannot see".
-                using_server_fallback=True,
             )
 
         return OdooConfigStatus(
@@ -59,6 +58,11 @@ class CompanyService:
             is_enabled=config.is_enabled,
             verified_at=config.verified_at,
             encryption_available=secrets.is_configured(),
+            shared_with_another_company=await self.configs.is_shared(
+                company_id=company_id,
+                base_url=config.base_url,
+                database=config.database,
+            ),
         )
 
     async def save_odoo_config(
@@ -136,12 +140,64 @@ class CompanyService:
         fast with a clear reason instead of timing out, and turning it back on
         does not mean re-entering an API key.
         """
+        return await self._set_enabled(actor=actor, is_enabled=False)
+
+    async def enable_odoo(self, *, actor: User) -> OdooConfigStatus:
+        """Switch a previously configured connection back on.
+
+        The other half of `disable_odoo`, and not optional: without it the only
+        route back is re-saving, which means retyping an API key the server
+        deliberately cannot show. A switch that only goes one way is a switch
+        nobody can safely use.
+        """
+        return await self._set_enabled(actor=actor, is_enabled=True)
+
+    async def _set_enabled(
+        self, *, actor: User, is_enabled: bool
+    ) -> OdooConfigStatus:
+        """Both directions of the same write.
+
+        Resetting the cached client is what makes the flag take effect. Without
+        it a switched-off company keeps talking to Odoo through the connection
+        this process already holds, for as long as the cache lives — the switch
+        would change the screen and nothing else.
+        """
+        company_id = company_of(actor)
+        config = await self.configs.find_for_company(company_id)
+        if config is None:
+            raise OdooNotConfiguredError(
+                "There is no Odoo connection to switch on or off yet."
+            )
+
+        if config.is_enabled != is_enabled:
+            config.is_enabled = is_enabled
+            await self.db.commit()
+            reset_odoo_client(company_id)
+
+        return await self.odoo_status(actor=actor)
+
+    async def delete_odoo(self, *, actor: User) -> OdooConfigStatus:
+        """Forget this company's Odoo entirely, credentials and all.
+
+        Different from disabling: that keeps the key for later, this removes
+        it. For a company changing ERP, or one that entered the wrong tenant's
+        details and wants no trace of them.
+
+        Safe for the record. Every bill this system raised stored its Odoo id
+        and an audit blob on the invoice row itself, so the bill history keeps
+        rendering with no Odoo attached — it reports what was done, not what
+        Odoo currently holds.
+        """
         company_id = company_of(actor)
         config = await self.configs.find_for_company(company_id)
         if config is not None:
-            config.is_enabled = False
+            await self.configs.delete(config)
             await self.db.commit()
+            # The credentials are gone from the database; they must also go
+            # from this process, or the next request is served by a client
+            # authenticated with what was just deleted.
             reset_odoo_client(company_id)
+
         return await self.odoo_status(actor=actor)
 
     @staticmethod

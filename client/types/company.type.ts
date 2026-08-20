@@ -38,9 +38,11 @@ export interface OdooConfigStatus {
    *  neither saved nor read, and the screen says so rather than failing on
    *  save. */
   encryption_available: boolean;
-  /** True when this company has no configuration of its own and is running on
-   *  the server's environment fallback. */
-  using_server_fallback: boolean;
+  /** True when ANOTHER company on this platform points at the same Odoo
+   *  database. Not an error — a group may genuinely share one — but two
+   *  tenants silently sharing a ledger is what per-company credentials exist
+   *  to prevent. */
+  shared_with_another_company: boolean;
 }
 
 /** Credentials an administrator is saving for their OWN company. */

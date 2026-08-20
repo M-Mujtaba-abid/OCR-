@@ -71,9 +71,17 @@ Controller = Annotated[InvoiceController, Depends(get_invoice_controller)]
 CanCreate = Annotated[User, Depends(require_permission("invoice.create"))]
 CanRead = Annotated[User, Depends(require_permission("invoice.read"))]
 CanReadAll = Annotated[User, Depends(require_permission("invoice.read.all"))]
-# Matching and confirming both post a decision that ends in a vendor bill, so
-# they need approval rights, not merely the ability to read every invoice.
-CanApprove = Annotated[User, Depends(require_permission("invoice.approve"))]
+# Reviewing an invoice: matching it, confirming or rejecting the match, and
+# raising a purchase order for one that matched nothing. More than reading
+# every invoice, and short of committing to pay one.
+CanReview = Annotated[User, Depends(require_permission("invoice.review"))]
+
+# Creating the vendor bill, and nothing else. Split out of the old
+# `invoice.approve` because it is the step where money leaves: a manager gets
+# an invoice ready, and an administrator is the one who bills it. Guarding the
+# whole pipeline with a single permission meant whoever could review could also
+# pay, which is the separation an approvals flow exists to create.
+CanBill = Annotated[User, Depends(require_permission("invoice.bill"))]
 
 ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
     400: {"model": ApiErrorResponse},

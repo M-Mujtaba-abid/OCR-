@@ -56,4 +56,24 @@ export const companyService = {
     );
     return response.data.data;
   },
+
+  /** The other half of disable — no retyping of the key. */
+  enableOdoo: async (): Promise<OdooConfigStatus> => {
+    const response = await api.post<ApiResponse<OdooConfigStatus>>(
+      "/company/odoo/enable",
+    );
+    return response.data.data;
+  },
+
+  /**
+   * Forget the credentials entirely, rather than switching them off.
+   *
+   * Bill history survives: what this system raised is recorded on the invoice
+   * rows themselves, not read back from Odoo.
+   */
+  deleteOdoo: async (): Promise<OdooConfigStatus> => {
+    const response =
+      await api.delete<ApiResponse<OdooConfigStatus>>("/company/odoo");
+    return response.data.data;
+  },
 };

@@ -21,8 +21,9 @@ class CompanyOdooConfigRepository:
         """The row, or None when this company has never configured Odoo.
 
         None is an ordinary answer, not an error: a company that only reviews
-        scans and never pushes to an ERP has no row here, and the credential
-        resolver treats it as "fall back to the environment".
+        scans and never pushes to an ERP has no row here. It is NOT a licence
+        to substitute somebody else's connection — `resolve_credentials`
+        refuses rather than falling back.
         """
         stmt = select(CompanyOdooConfig).where(
             CompanyOdooConfig.company_id == company_id
@@ -61,6 +62,41 @@ class CompanyOdooConfigRepository:
         await self.db.flush()
         await self.db.refresh(config)
         return config
+
+    async def is_shared(
+        self, *, company_id: uuid.UUID, base_url: str, database: str
+    ) -> bool:
+        """Whether another company points at this same Odoo database.
+
+        Not a constraint. A group of companies may genuinely share one Odoo
+        with several `res.company` records inside it, and refusing that would
+        block a legitimate setup. But two tenants unknowingly sharing a ledger
+        is precisely what per-company credentials exist to prevent, so it is
+        worth saying out loud on the settings screen.
+
+        `EXISTS` rather than a count: the answer is a yes/no and the query can
+        stop at the first row.
+        """
+        stmt = (
+            select(CompanyOdooConfig.id)
+            .where(
+                CompanyOdooConfig.company_id != company_id,
+                CompanyOdooConfig.base_url == base_url,
+                CompanyOdooConfig.database == database,
+            )
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).first() is not None
+
+    async def delete(self, config: CompanyOdooConfig) -> None:
+        """Remove this company's connection entirely. Does NOT commit.
+
+        Nothing cascades: invoices keep their `odoo_bill_id` and the audit blob
+        in `extra`, because those record what this system DID rather than what
+        Odoo currently holds. A company can drop its ERP and keep its history.
+        """
+        await self.db.delete(config)
+        await self.db.flush()
 
     async def mark_verified(
         self, config: CompanyOdooConfig, *, at: dt.datetime

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { OdooSettingsPanel } from "@/components/admin/OdooSettingsPanel";
+import { OdooPanel } from "@/components/admin/OdooPanel";
 import { UsersPanel } from "@/components/admin/UsersPanel";
 import { PipelineBar } from "@/components/charts/PipelineBar";
 import { StatusBreakdown } from "@/components/charts/StatusBreakdown";
@@ -22,7 +22,7 @@ import { useUserStats } from "@/hooks/user/useUsers.hooks";
 import { ROLE_LABEL } from "@/lib/auth/roles";
 import type { UserRole } from "@/types/user.type";
 
-type TabId = "overview" | "invoices" | "users" | "history" | "settings";
+type TabId = "overview" | "invoices" | "users" | "history" | "odoo";
 
 /** Least to most privileged, so the shape of the org reads top to bottom. */
 const ROLES: readonly UserRole[] = ["member", "manager", "admin"] as const;
@@ -52,7 +52,7 @@ export default function AdminPage() {
     { id: "invoices", label: "Invoices", badge: invoiceStats?.total },
     { id: "users", label: "Users", badge: userStats?.total },
     { id: "history", label: "History", badge: billed },
-    { id: "settings", label: "Settings" },
+    { id: "odoo", label: "Odoo" },
   ];
 
   return (
@@ -182,8 +182,8 @@ export default function AdminPage() {
           <BillHistoryPanel />
         </TabPanel>
 
-        <TabPanel id="settings" active={tab === "settings"}>
-          <OdooSettingsPanel />
+        <TabPanel id="odoo" active={tab === "odoo"}>
+          <OdooPanel />
         </TabPanel>
       </div>
     </div>

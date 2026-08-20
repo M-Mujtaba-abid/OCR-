@@ -112,6 +112,44 @@ async def verify_odoo(actor: CanAdmin, db: DbSession) -> ApiResponse[dict[str, A
 
 
 @router.post(
+    "/odoo/enable",
+    response_model=ApiResponse[OdooConfigStatus],
+    summary="Switch the Odoo connection back on (requires system.admin)",
+    responses=ERROR_RESPONSES,
+)
+async def enable_odoo(actor: CanAdmin, db: DbSession) -> ApiResponse[OdooConfigStatus]:
+    """The other half of `/odoo/disable`.
+
+    Without it the only way back on is re-saving, which means retyping an API
+    key this API deliberately cannot show — so a company that switched Odoo off
+    for an afternoon's maintenance could not switch it on again.
+    """
+    return ApiResponse.ok(
+        await CompanyService(db).enable_odoo(actor=actor),
+        message="Odoo connection enabled",
+    )
+
+
+@router.delete(
+    "/odoo",
+    response_model=ApiResponse[OdooConfigStatus],
+    summary="Remove your company's Odoo credentials (requires system.admin)",
+    responses=ERROR_RESPONSES,
+)
+async def delete_odoo(actor: CanAdmin, db: DbSession) -> ApiResponse[OdooConfigStatus]:
+    """Forget the connection entirely, rather than switching it off.
+
+    For a company changing ERP, or one that entered the wrong tenant's details.
+    Bill history survives: what this system raised is recorded on the invoice
+    rows themselves, not read back from Odoo.
+    """
+    return ApiResponse.ok(
+        await CompanyService(db).delete_odoo(actor=actor),
+        message="Odoo credentials removed",
+    )
+
+
+@router.post(
     "/odoo/disable",
     response_model=ApiResponse[OdooConfigStatus],
     summary="Switch the Odoo connection off (requires system.admin)",

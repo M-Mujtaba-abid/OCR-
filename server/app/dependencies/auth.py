@@ -130,6 +130,13 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "invoice.read",
         "invoice.create",
     },
+    # A manager runs the queue. They read every invoice in their company, match
+    # it, confirm or reject it, and raise a purchase order for one that matched
+    # nothing — everything except the last step.
+    #
+    # `invoice.bill` is the step they do not have, and the separation is the
+    # point: creating the vendor bill is where money leaves, so the person who
+    # reviewed an invoice is not also the person who commits to paying it.
     UserRole.MANAGER: {
         "user.read.self",
         "user.update.self",
@@ -137,7 +144,7 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "invoice.read",
         "invoice.read.all",
         "invoice.create",
-        "invoice.approve",
+        "invoice.review",
     },
     UserRole.ADMIN: {
         "user.read.self",
@@ -149,7 +156,11 @@ ROLE_PERMISSIONS: dict[UserRole, set[str]] = {
         "invoice.read",
         "invoice.read.all",
         "invoice.create",
-        "invoice.approve",
+        "invoice.review",
+        # The one an admin has and a manager does not: creating the vendor bill
+        # in Odoo. Everything before it is reviewable work; this is the step
+        # that ends in a vendor being paid.
+        "invoice.bill",
         "invoice.delete",
         "system.admin",
     },

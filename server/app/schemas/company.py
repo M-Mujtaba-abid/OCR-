@@ -23,6 +23,11 @@ class CompanyRead(BaseModel):
 class OdooConfigStatus(BaseModel):
     """What is configured, and never the credential itself.
 
+    `configured=False` means this company cannot reach Odoo at all — matching
+    and billing refuse until an administrator connects one. There is no server
+    fallback: it would silently point every unconfigured company at whichever
+    Odoo the deployment was built against.
+
     There is deliberately no field here that could carry the API key back out.
     A settings screen needs to know whether a connection exists, where it
     points and whether it has ever worked — none of which requires showing the
@@ -41,9 +46,11 @@ class OdooConfigStatus(BaseModel):
     #: can be neither saved nor read and the screen should say so rather than
     #: failing when somebody presses save.
     encryption_available: bool = True
-    #: True when this company has no configuration of its own and is running on
-    #: the server's environment fallback.
-    using_server_fallback: bool = False
+    #: True when ANOTHER company on this platform points at the same Odoo
+    #: database. Not an error — a group may genuinely share one — but two
+    #: tenants silently sharing a ledger is the exact failure per-company
+    #: credentials exist to prevent, so the screen says so.
+    shared_with_another_company: bool = False
 
 
 class OdooConfigWrite(BaseModel):
