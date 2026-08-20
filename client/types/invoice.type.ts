@@ -529,7 +529,8 @@ export type NotificationType =
   | "invoice_pushed"
   | "approval_requested"
   | "approval_granted"
-  | "approval_declined";
+  | "approval_declined"
+  | "approval_overdue";
 
 export interface AppNotification {
   id: string;

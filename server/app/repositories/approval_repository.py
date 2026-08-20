@@ -9,11 +9,12 @@ payables to another.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_ as sa_or, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -108,6 +109,7 @@ class ApprovalRepository:
                 position=index,
                 name=step["name"],
                 approver_user_ids=list(step["approver_user_ids"]),
+                records_receipt=bool(step.get("records_receipt", False)),
             )
             # Positions are assigned here, from order, rather than trusted from
             # the payload: a client that sends 1, 2, 4 would otherwise create a
@@ -298,7 +300,14 @@ class ApprovalRepository:
                 ApprovalRequest.current_position == expect,
                 ApprovalRequest.status == ApprovalRequestStatus.PENDING,
             )
-            .values(current_position=expect + 1)
+            .values(
+                current_position=expect + 1,
+                # The next approver's clock starts now, and their first
+                # notification must not be a reminder about the silence of the
+                # person before them.
+                current_step_since=dt.datetime.now(dt.UTC),
+                reminded_at=None,
+            )
         )
         moved = int((await self.db.execute(stmt)).rowcount or 0) == 1
         if moved:
@@ -307,6 +316,64 @@ class ApprovalRepository:
             # serialise in step with the row.
             await self.db.refresh(request)
         return moved
+
+    async def find_overdue(
+        self, *, waiting_since: dt.datetime, nudged_before: dt.datetime
+    ) -> list[uuid.UUID]:
+        """Ids of pending requests whose current rung has gone quiet.
+
+        DELIBERATELY NOT company-scoped, and the only method here that is not.
+
+        It is called by the cron sweep, which has no caller to scope to: the
+        request comes from a scheduler holding a shared secret, not from a person
+        in a company, and a request stuck in one company must not stay stuck
+        because nobody in another triggered a sweep.
+
+        That is safe for exactly one reason, and it is the same argument the
+        invoice sweep rests on: this reads NOTHING company-specific. It returns
+        ids and only ids. The task each id is handed to loads the row itself and
+        takes the company from it, so every nudge carries its own company, one at
+        a time, and no company context is ever shared between two of them.
+
+        Adding a column to this SELECT would break that argument. Do not.
+        """
+        stmt = select(ApprovalRequest.id).where(
+            ApprovalRequest.status == ApprovalRequestStatus.PENDING,
+            ApprovalRequest.current_step_since <= waiting_since,
+            # Either never nudged, or not nudged recently. Without the second
+            # half a sweep running every five minutes would notify every five
+            # minutes, which is how a reminder becomes something people mute.
+            sa_or(
+                ApprovalRequest.reminded_at.is_(None),
+                ApprovalRequest.reminded_at <= nudged_before,
+            ),
+        )
+        return list((await self.db.execute(stmt)).scalars().all())
+
+    async def find_request_by_id(
+        self, request_id: uuid.UUID
+    ) -> ApprovalRequest | None:
+        """One request, by id alone, for the background task the sweep starts.
+
+        Unscoped on purpose and safe for the same reason
+        `MatchHistoryRepository.find_by_id` is: the caller is a task holding
+        nothing but an id, and the company it then acts in is read FROM the row
+        rather than inherited from the process.
+
+        Not to be used from a request handler. Anything reached by a person goes
+        through `find_request`, which takes their company and answers 404 for
+        anybody else's row.
+        """
+        stmt = (
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == request_id)
+            .options(
+                selectinload(ApprovalRequest.decisions),
+                selectinload(ApprovalRequest.requester),
+            )
+            .execution_options(populate_existing=True)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
 
     async def invoice_summaries(
         self, invoice_ids: Sequence[uuid.UUID], *, company_id: uuid.UUID

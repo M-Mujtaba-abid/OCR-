@@ -25,7 +25,9 @@ from app.db.session import get_db
 from app.lib.logging import get_logger
 from app.lib.responses import ApiResponse
 from app.models.match_history import InvoiceStatus
+from app.repositories.approval_repository import ApprovalRepository
 from app.repositories.match_history_repository import MatchHistoryRepository
+from app.services.approval_service import nudge_overdue_approval
 from app.services.invoice_service import InvoiceService
 from app.services.match_service import run_matching_for_invoice
 from app.services.ocr_service import run_ocr_for_invoice
@@ -119,4 +121,34 @@ async def sweep(
 
     if requeued:
         logger.info("Cron sweep re-queued %d invoice(s)", requeued)
-    return ApiResponse.ok({"requeued": requeued, "examined": len(stuck)})
+
+    # ---------------------------------------------------- overdue approvals
+    #
+    # The same dispatcher shape, for the same reason. `find_overdue` selects ids
+    # and only ids; each one goes to a task that loads the row, takes the
+    # company from it, and notifies inside that company alone. Nothing
+    # company-specific is read here, so the argument above still holds.
+    #
+    # An approval chain's real failure is being forgotten, not being refused: a
+    # request sits on somebody who is on leave and the invoice surfaces weeks
+    # later when the vendor chases it. This is what makes anybody notice.
+    now = dt.datetime.now(dt.UTC)
+    overdue = await ApprovalRepository(db).find_overdue(
+        waiting_since=now
+        - dt.timedelta(hours=settings.APPROVAL_REMIND_AFTER_HOURS),
+        nudged_before=now
+        - dt.timedelta(hours=settings.APPROVAL_REMIND_AFTER_HOURS),
+    )
+    for request_id in overdue:
+        background.add_task(nudge_overdue_approval, request_id)
+
+    if overdue:
+        logger.info("Cron sweep nudged %d overdue approval(s)", len(overdue))
+
+    return ApiResponse.ok(
+        {
+            "requeued": requeued,
+            "examined": len(stuck),
+            "approvals_nudged": len(overdue),
+        }
+    )

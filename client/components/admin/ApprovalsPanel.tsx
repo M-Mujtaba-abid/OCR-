@@ -26,6 +26,7 @@ import type { User } from "@/types/user.type";
 interface DraftStep {
   name: string;
   approver_user_ids: string[];
+  records_receipt: boolean;
 }
 
 /**
@@ -153,6 +154,11 @@ function ChainCard({
               {step.approver_user_ids.map((id) => nameOf(people, id)).join(", ")}
               {step.approver_user_ids.length > 1 && " — any one of them"}
             </span>
+            {step.records_receipt && (
+              <span className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800 dark:bg-sky-950 dark:text-sky-300">
+                posts the goods receipt
+              </span>
+            )}
           </li>
         ))}
       </ol>
@@ -242,13 +248,14 @@ function ChainEditor({
   const [steps, setSteps] = useState<DraftStep[]>(
     chain?.steps.map((step) => ({
       name: step.name,
+      records_receipt: step.records_receipt,
       // Filtered to people who are still here. Carrying a departed approver
       // through an edit would make the chain unsavable with an error about a
       // row the admin never touched.
       approver_user_ids: step.approver_user_ids.filter((id) =>
         people.some((person) => person.id === id),
       ),
-    })) ?? [{ name: "", approver_user_ids: [] }],
+    })) ?? [{ name: "", approver_user_ids: [], records_receipt: false }],
   );
 
   const patch = (index: number, next: Partial<DraftStep>) =>
@@ -388,6 +395,42 @@ function ChainEditor({
                 );
               })}
             </div>
+
+            <label className="mt-3 flex items-start gap-2 border-t border-slate-200 pt-3 text-sm text-slate-700 dark:border-slate-800 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={step.records_receipt}
+                // Only one rung may carry it. The server refuses two with a
+                // message, but unticking the other one here means the admin
+                // never meets that refusal.
+                onChange={(event) =>
+                  setSteps((current) =>
+                    current.map((other, i) => ({
+                      ...other,
+                      records_receipt: event.target.checked
+                        ? i === index
+                        : i === index
+                          ? false
+                          : other.records_receipt,
+                    })),
+                  )
+                }
+                className="mt-0.5 size-4 rounded border-slate-300 dark:border-slate-600"
+              />
+              <span>
+                Approving this step records the goods receipt in Odoo.
+                <span className="block text-xs text-slate-500 dark:text-slate-500">
+                  This is the step that closes the three-way match: the person
+                  reading ordered / received / remaining is the one whose click
+                  moves the stock. Put it on whoever checks the parcel.
+                </span>
+                <span className="block text-xs text-amber-700 dark:text-amber-400">
+                  The stock movement is real from that moment. A decline further
+                  down the chain does not return it — and it should not, because
+                  the goods did arrive.
+                </span>
+              </span>
+            </label>
           </div>
         ))}
       </div>
@@ -399,7 +442,7 @@ function ChainEditor({
           onClick={() =>
             setSteps((current) => [
               ...current,
-              { name: "", approver_user_ids: [] },
+              { name: "", approver_user_ids: [], records_receipt: false },
             ])
           }
         >
@@ -443,6 +486,7 @@ function ChainEditor({
                   steps: steps.map((step) => ({
                     name: step.name.trim(),
                     approver_user_ids: step.approver_user_ids,
+                    records_receipt: step.records_receipt,
                   })),
                 },
               },

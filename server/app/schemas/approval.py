@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from decimal import Decimal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -18,6 +19,16 @@ from app.schemas.invoice import CreateBillLine, UploaderRead
 # ---------------------------------------------------------------------------
 class ApprovalStepInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    records_receipt: bool = Field(
+        default=False,
+        description=(
+            "Approving this step posts the goods receipt in Odoo for the "
+            "approved quantities. At most one step per chain may do it. Note "
+            "the stock movement is real from that moment and a later decline "
+            "does not return it — a receipt is a statement about the warehouse, "
+            "not about whether the invoice gets paid."
+        ),
+    )
     approver_user_ids: list[uuid.UUID] = Field(
         min_length=1,
         description=(
@@ -59,6 +70,7 @@ class ApprovalStepRead(BaseModel):
     position: int
     name: str
     approver_user_ids: list[uuid.UUID]
+    records_receipt: bool = False
 
 
 class ApprovalChainRead(BaseModel):
@@ -130,6 +142,7 @@ class ApprovalStepProgress(BaseModel):
     position: int
     name: str
     approver_user_ids: list[uuid.UUID]
+    records_receipt: bool = False
     #: None while the rung is still waiting.
     decision: ApprovalDecisionRead | None = None
     is_current: bool = False
@@ -148,9 +161,26 @@ class ApprovalRequestRead(BaseModel):
     requested_by: uuid.UUID | None = None
     requester: UploaderRead | None = None
     created_at: dt.datetime
+    #: When the CURRENT step started waiting — not the age of the request. What
+    #: the sweep measures.
+    current_step_since: dt.datetime
+    #: Whole days the current step has been waiting, computed server-side.
+    #:
+    #: Sent rather than derived in the browser, and not only to save a
+    #: subtraction: a value computed from the client's clock during render is
+    #: unstable across re-renders and wrong on a machine whose time is off. This
+    #: is the same figure the overdue reminder puts in its notification, so the
+    #: screen and the email agree.
+    waiting_days: int = 0
 
     steps: list[ApprovalStepProgress] = Field(default_factory=list)
     lines: list[ApprovalLineRead] = Field(default_factory=list)
+
+    #: The Odoo order these lines belong to.
+    po_id: int | None = None
+    #: What Odoo did when a receiving step was approved, or null. Its
+    #: `picking_name` is what a person reconciles against Odoo.
+    receipt: dict[str, Any] | None = None
 
 
 class InvoiceApprovalRead(BaseModel):

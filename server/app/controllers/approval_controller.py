@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +48,7 @@ def _to_read(request: ApprovalRequest) -> ApprovalRequestRead:
             position=int(step["position"]),
             name=str(step["name"]),
             approver_user_ids=[uuid.UUID(str(u)) for u in step["approver_user_ids"]],
+            records_receipt=bool(step.get("records_receipt", False)),
             decision=by_position.get(int(step["position"])),
             is_current=int(step["position"]) == request.current_position,
         )
@@ -63,8 +65,15 @@ def _to_read(request: ApprovalRequest) -> ApprovalRequestRead:
         requested_by=request.requested_by,
         requester=request.requester,  # type: ignore[arg-type]
         created_at=request.created_at,
+        current_step_since=request.current_step_since,
+        waiting_days=max(
+            0,
+            (dt.datetime.now(dt.UTC) - request.current_step_since).days,
+        ),
         steps=steps,
         lines=[ApprovalLineRead(**line) for line in request.lines_snapshot],
+        po_id=request.po_id,
+        receipt=request.receipt,
     )
 
 
@@ -116,6 +125,7 @@ class ApprovalController:
                 {
                     "name": step.name,
                     "approver_user_ids": [str(u) for u in step.approver_user_ids],
+                    "records_receipt": step.records_receipt,
                 }
                 for step in payload.steps
             ],
@@ -175,7 +185,10 @@ class ApprovalController:
             lines=[line.model_dump() for line in payload.lines],
         )
         request = await self.service.request_approval(
-            invoice=invoice, requested_by=user.id, lines=lines
+            invoice=invoice,
+            requested_by=user.id,
+            po_id=payload.po_id,
+            lines=lines,
         )
         await self.db.commit()
         return ApiResponse.ok(

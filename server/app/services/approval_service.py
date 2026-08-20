@@ -22,6 +22,7 @@ land or neither does.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -36,6 +37,8 @@ from app.core.exceptions import (
     NotFoundError,
     ValidationError,
 )
+from app.core.config import settings
+from app.db.session import SessionFactory
 from app.lib.logging import get_logger
 from app.models.approval import (
     ApprovalChain,
@@ -45,11 +48,12 @@ from app.models.approval import (
 )
 from app.models.match_history import InvoiceStatus, MatchHistory
 from app.models.notification import NotificationType
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.repositories.approval_repository import ApprovalRepository
 from app.repositories.match_history_repository import MatchHistoryRepository
 from app.repositories.user_repository import UserRepository
 from app.services.notification_service import NotificationService
+from app.services.odoo_service import odoo_for_invoice
 
 logger = get_logger(__name__)
 
@@ -120,6 +124,50 @@ def may_decide(
     )
 
 
+def step_records_receipt(request: ApprovalRequest, position: int) -> bool:
+    """Whether this rung posts the goods receipt, read from the frozen snapshot.
+
+    From the snapshot rather than the live chain, like every other rule here: an
+    admin ticking the box while a request is mid-flight must not turn somebody's
+    pending approval into a stock movement they never agreed to make.
+    """
+    step = step_at(request, position)
+    return bool(step and step.get("records_receipt"))
+
+
+def reachable_approvers(
+    request: ApprovalRequest,
+    position: int,
+    *,
+    already_decided: set[uuid.UUID] | None = None,
+) -> set[uuid.UUID]:
+    """Who could actually decide this rung right now.
+
+    The people named on it, minus the ones the rules would refuse anyway: the
+    requester when self-approval is off, and anybody who has already had their
+    say on an earlier rung. Telling somebody it is their turn when
+    `may_decide` would turn them away is worse than telling them nothing.
+
+    Shared by the first notification and by the reminder, deliberately. Two
+    copies of "who should hear about this" would drift, and the way it would
+    drift is a reminder going to somebody who cannot act on it.
+    """
+    step = step_at(request, position)
+    if step is None:
+        return set()
+
+    recipients = approvers_of(step)
+    if not request.allow_self_approval and request.requested_by is not None:
+        recipients.discard(request.requested_by)
+    if already_decided is None:
+        already_decided = {
+            decision.decided_by
+            for decision in request.decisions
+            if decision.decided_by is not None
+        }
+    return recipients - already_decided
+
+
 def is_final_step(request: ApprovalRequest, position: int) -> bool:
     positions = [int(step.get("position", 0)) for step in request.steps_snapshot]
     return bool(positions) and position >= max(positions)
@@ -185,6 +233,21 @@ class ApprovalService:
                     f"approver stops every invoice that reaches it."
                 )
             named.update(uuid.UUID(str(raw)) for raw in step["approver_user_ids"])
+
+        receipt_steps = [
+            index
+            for index, step in enumerate(steps, start=1)
+            if step.get("records_receipt")
+        ]
+        if len(receipt_steps) > 1:
+            # The second one would find nothing left to receive and fail with
+            # Odoo's own NO_OPEN_RECEIPT, mid-chain, on somebody who did nothing
+            # wrong. Refused here instead, where it is a sentence on a form.
+            raise ValidationError(
+                "Only one step can record the goods receipt. Steps "
+                + ", ".join(str(index) for index in receipt_steps)
+                + " are all set to, and the receipt can only be posted once."
+            )
 
         # One query for every approver across every step, rather than one per
         # step: a seven-rung chain should cost one round trip to validate.
@@ -260,6 +323,7 @@ class ApprovalService:
                 {
                     "name": step.name,
                     "approver_user_ids": [str(u) for u in step.approver_user_ids],
+                    "records_receipt": step.records_receipt,
                 }
                 for step in chain.steps
             ]
@@ -330,6 +394,7 @@ class ApprovalService:
         *,
         invoice: MatchHistory,
         requested_by: uuid.UUID,
+        po_id: int,
         lines: list[dict[str, Any]],
     ) -> ApprovalRequest:
         """Start a chain for this invoice.
@@ -367,12 +432,17 @@ class ApprovalService:
                 "position": step.position,
                 "name": step.name,
                 "approver_user_ids": [str(u) for u in step.approver_user_ids],
+                "records_receipt": step.records_receipt,
             }
             for step in chain.steps
         ]
         await self._validate_steps(
             [
-                {"name": s["name"], "approver_user_ids": s["approver_user_ids"]}
+                {
+                    "name": s["name"],
+                    "approver_user_ids": s["approver_user_ids"],
+                    "records_receipt": s["records_receipt"],
+                }
                 for s in snapshot
             ],
             company_id=company_id,
@@ -400,6 +470,7 @@ class ApprovalService:
             status=ApprovalRequestStatus.PENDING,
             requested_by=requested_by,
             current_position=1,
+            po_id=po_id,
             amount_at_request=self._amount_at_request(invoice, lines),
             status_before_approval=invoice.status,
             allow_self_approval=chain.allow_self_approval,
@@ -479,6 +550,20 @@ class ApprovalService:
         if invoice is None or invoice.company_id != company_id:
             raise NotFoundError("Approval request not found.")
 
+        # The goods receipt, if this is the rung that records it.
+        #
+        # Before the decision is written, and that ordering is the whole design:
+        # `receive_purchase_order_lines` is the one call in this system that
+        # cannot be undone, so if Odoo refuses — no open receipt, a tracked
+        # product, quantities it will not accept — nothing here has been written
+        # and the approver sees why. Recording the approval first would leave a
+        # chain claiming a receipt that never happened.
+        receipt = (
+            await self._record_receipt(request, invoice, user_id=user.id)
+            if approve and step_records_receipt(request, position)
+            else None
+        )
+
         await self._record(
             request,
             position=position,
@@ -488,6 +573,8 @@ class ApprovalService:
             else ApprovalDecision.DECLINED,
             reason=reason,
         )
+        if receipt is not None:
+            await self.repo.update_request(request, receipt=receipt)
 
         if not approve:
             return await self._close(
@@ -523,6 +610,76 @@ class ApprovalService:
             already_decided=already_decided,
         )
         return request
+
+    async def _record_receipt(
+        self,
+        request: ApprovalRequest,
+        invoice: MatchHistory,
+        *,
+        user_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        """Post the goods receipt in Odoo for the quantities that were approved.
+
+        This is the leg of the three-way match the system used to take on trust.
+        `remaining_to_bill` is ordered-minus-invoiced on purpose, so
+        `qty_received` was shown to the reviewer and then ignored by every rule —
+        which means nothing anywhere confirmed the goods had arrived. A step that
+        posts the receipt makes the person reading those columns the person whose
+        click moves the stock.
+
+        The quantities come from `lines_snapshot`, not from Odoo and not from the
+        invoice: they are exactly the numbers on the approver's screen. Receiving
+        anything else would mean approving one figure and posting another.
+
+        Idempotent by refusal rather than by retry. A second receipt on one
+        request is a bug, not a repeat, and Odoo would answer NO_OPEN_RECEIPT
+        halfway through a chain to somebody who did nothing wrong.
+        """
+        if request.receipt is not None:
+            raise ConflictError(
+                "The goods receipt for this request has already been recorded "
+                f"({request.receipt.get('picking_name') or 'in Odoo'}).",
+                code="RECEIPT_ALREADY_RECORDED",
+            )
+        if request.po_id is None:
+            # Only reachable for a request written before this feature existed.
+            raise ConflictError(
+                "This request does not record which purchase order it is for, "
+                "so the goods receipt cannot be posted. Send the invoice for "
+                "approval again.",
+                code="NO_ORDER_ON_REQUEST",
+            )
+
+        quantities: dict[int, float] = {}
+        for line in request.lines_snapshot:
+            po_line_id = int(line["po_line_id"])
+            quantities[po_line_id] = quantities.get(po_line_id, 0.0) + float(
+                line["quantity"]
+            )
+
+        odoo = await odoo_for_invoice(self.db, invoice)
+        result = await odoo.receive_purchase_order_lines(
+            po_id=request.po_id, quantities=quantities
+        )
+
+        logger.info(
+            "approval.receipt_recorded",
+            extra={
+                "request_id": str(request.id),
+                "invoice_id": str(invoice.id),
+                "company_id": str(invoice.company_id),
+                "picking": result.picking_name,
+            },
+        )
+        return {
+            "picking_id": result.picking_id,
+            "picking_name": result.picking_name,
+            "backorders": list(result.backorder_names),
+            "received": {str(k): v for k, v in result.received.items()},
+            "position": request.current_position,
+            "recorded_by": str(user_id),
+            "recorded_at": dt.datetime.now(dt.UTC).isoformat(),
+        }
 
     async def cancel(
         self,
@@ -649,6 +806,105 @@ class ApprovalService:
         until somebody submits another.
         """
         return await self.repo.latest_request(invoice_id, company_id=company_id)
+
+    async def nudge(self, request_id: uuid.UUID) -> bool:
+        """Remind whoever this request is waiting on, and escalate if it is old.
+
+        The failure an approval chain actually has is not refusal — it is being
+        forgotten. A request sits on somebody who is on leave, nothing in the
+        product mentions it again, and the invoice surfaces weeks later when the
+        vendor chases it. The gate made billing wait; this is what makes anybody
+        notice.
+
+        Loaded by id alone because the caller is a background task holding
+        nothing else. The company comes from the row and every notification below
+        is scoped to it, so a sweep that touches ten companies' requests sends
+        ten separately-scoped sets of notifications and never mixes them.
+
+        Returns whether anything was sent, so the sweep can report a number that
+        means something.
+        """
+        request = await self.repo.find_request_by_id(request_id)
+        if request is None or request.status is not ApprovalRequestStatus.PENDING:
+            # Decided between the sweep's SELECT and this task running. Normal,
+            # not an error: the whole point is that somebody acts on these.
+            return False
+
+        invoice = await self.invoices.find_by_id(request.invoice_id)
+        if invoice is None:
+            return False
+
+        company_id = request.company_id
+        position = request.current_position
+        step = step_at(request, position)
+        if step is None:  # pragma: no cover — a hand-edited snapshot
+            return False
+
+        waited = dt.datetime.now(dt.UTC) - request.current_step_since
+        days = max(1, round(waited.total_seconds() / 86400))
+        overdue = waited >= dt.timedelta(
+            hours=settings.APPROVAL_ESCALATE_AFTER_HOURS
+        )
+
+        recipients = reachable_approvers(request, position)
+        for user_id in sorted(recipients):
+            await self.notifications.notify_user(
+                user_id=user_id,
+                company_id=company_id,
+                type=NotificationType.APPROVAL_REQUESTED,
+                title=f"Still waiting on you: {invoice.file_name}",
+                message=(
+                    f"Step {position} — {step['name']}. "
+                    f"Waiting {days} day{'s' if days != 1 else ''}."
+                ),
+                match_history_id=invoice.id,
+            )
+
+        escalated = 0
+        if overdue:
+            # Admins, and only the ones who are not already being nudged as
+            # approvers — the same person getting "still waiting on you" and
+            # "somebody is not responding" about one rung reads as a bug.
+            admins = set(
+                await self.users.list_ids_by_role(
+                    UserRole.ADMIN, company_id=company_id
+                )
+            )
+            for user_id in sorted(admins - recipients):
+                await self.notifications.notify_user(
+                    user_id=user_id,
+                    company_id=company_id,
+                    type=NotificationType.APPROVAL_OVERDUE,
+                    title=f"Approval overdue: {invoice.file_name}",
+                    message=(
+                        f"Step {position} ({step['name']}) has been waiting "
+                        f"{days} day{'s' if days != 1 else ''}. This invoice "
+                        f"cannot be billed until it is decided."
+                    ),
+                    match_history_id=invoice.id,
+                )
+                escalated += 1
+
+        # Stamped whether or not anybody was reachable. A rung whose approvers
+        # have all been deactivated would otherwise be selected by every sweep
+        # forever, and the answer to that is the admin cancelling the request —
+        # which the escalation is what tells them to do.
+        await self.repo.update_request(
+            request, reminded_at=dt.datetime.now(dt.UTC)
+        )
+
+        logger.info(
+            "approval.nudged",
+            extra={
+                "request_id": str(request.id),
+                "company_id": str(company_id),
+                "position": position,
+                "days": days,
+                "approvers": len(recipients),
+                "escalated": escalated,
+            },
+        )
+        return bool(recipients or escalated)
 
     # -------------------------------------------------------------- the gate
     async def gate_for_billing(self, invoice: MatchHistory) -> ApprovalRequest | None:
@@ -790,12 +1046,9 @@ class ApprovalService:
         if step is None:
             return
 
-        recipients = approvers_of(step)
-        if not request.allow_self_approval and request.requested_by is not None:
-            # No point telling somebody it is their turn when the rule says they
-            # may not act on it.
-            recipients.discard(request.requested_by)
-        recipients -= already_decided
+        recipients = reachable_approvers(
+            request, position, already_decided=already_decided
+        )
 
         if not recipients:
             logger.warning(
@@ -816,4 +1069,27 @@ class ApprovalService:
                 title=f"Your approval is needed: {invoice.file_name}",
                 message=f"Step {position} — {step['name']}.",
                 match_history_id=invoice.id,
+            )
+
+
+async def nudge_overdue_approval(request_id: uuid.UUID) -> None:
+    """Background entry point for one overdue request. Owns its own session.
+
+    The shape the cron sweep needs, and the reason the sweep can stay
+    cross-company without reading anything cross-company: it hands over an id,
+    and everything after this line happens inside one company that was read from
+    one row.
+
+    Swallows its own failures. A background task that raises has nobody to tell
+    — there is no request left to answer — and one company's unreachable
+    database must not stop the other nine getting nudged in the same sweep.
+    """
+    async with SessionFactory() as db:
+        try:
+            await ApprovalService(db).nudge(request_id)
+            await db.commit()
+        except Exception:  # noqa: BLE001 — a reminder is never worth a crash
+            await db.rollback()
+            logger.exception(
+                "approval.nudge_failed", extra={"request_id": str(request_id)}
             )

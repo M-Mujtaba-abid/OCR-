@@ -163,6 +163,22 @@ class ApprovalStep(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ARRAY(UUID(as_uuid=True)), nullable=False, server_default=text("'{}'::uuid[]")
     )
 
+    #: Approving this rung posts the goods receipt in Odoo for the request's
+    #: snapshotted quantities.
+    #:
+    #: The whole point of a receiving step: the person reading
+    #: ordered/received/remaining is the one whose click moves the stock, rather
+    #: than a formality that only unblocks somebody else. At most one rung per
+    #: chain may carry it — a second would find no open receipt left.
+    #:
+    #: Note this makes the approval irreversible in a way no other rung is. The
+    #: stock move is real from that moment, and a decline three steps later does
+    #: not return it. That is correct: a receipt is a statement about the
+    #: warehouse, not about whether the invoice gets paid.
+    records_receipt: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     chain: Mapped["ApprovalChain"] = relationship(back_populates="steps", lazy="raise")
 
 
@@ -180,6 +196,13 @@ class ApprovalRequest(UUIDPrimaryKeyMixin, CompanyScopedMixin, TimestampMixin, B
         # "What is waiting in this company" — the queue behind the badge.
         Index("ix_approval_requests_company_status", "company_id", "status"),
         Index("ix_approval_requests_invoice", "invoice_id"),
+        # What the cron sweep asks, constantly, for an answer that is almost
+        # always empty. Partial so it indexes only rows that can be overdue.
+        Index(
+            "ix_approval_requests_pending_since",
+            "current_step_since",
+            postgresql_where=text("status = 'pending'"),
+        ),
         # One open request per invoice. Without this, two people clicking
         # "request approval" produce two chains for one bill and whichever
         # finishes first silently authorises it.
@@ -257,6 +280,42 @@ class ApprovalRequest(UUIDPrimaryKeyMixin, CompanyScopedMixin, TimestampMixin, B
         ),
         nullable=False,
     )
+
+    #: The Odoo order this request is asking to bill against.
+    #:
+    #: Stored rather than re-derived from the invoice at approval time. The lines
+    #: snapshot holds `po_line_id`s and never the order they belong to, and
+    #: reading `final_po_id` later would consult a field a reviewer may have
+    #: changed since the approvers agreed to these quantities.
+    po_id: Mapped[int | None] = mapped_column(Integer)
+
+    #: What Odoo did when a receiving rung was approved, or None.
+    #:
+    #: `{picking_name, backorders, received, recorded_by, recorded_at, position}`
+    #:
+    #: Read by two different things. `create_bill_for_invoice` checks it so the
+    #: biller's "receive goods" checkbox cannot post the same movement twice; a
+    #: human reads `picking_name` to reconcile against Odoo if a commit ever
+    #: lands on the wrong side of the network call that wrote it.
+    receipt: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    #: When the CURRENT rung started waiting, reset on every advance.
+    #:
+    #: Not the age of the request. A three-step chain where the first two rungs
+    #: were decided within the hour and the third has sat for a week is overdue
+    #: by a week, not by a week and an hour — and the person to chase is the one
+    #: on rung three, not everybody who has already acted.
+    current_step_since: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    #: When a reminder last went out, or None.
+    #:
+    #: The sweep runs every five minutes; without this it would send a
+    #: notification every five minutes, which is how a reminder becomes
+    #: something people filter out. Cleared on advance, so the next approver's
+    #: first notification is never a reminder about somebody else's silence.
+    reminded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     #: The chain's self-approval policy, frozen with the steps.
     #:

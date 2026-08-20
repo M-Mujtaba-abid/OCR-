@@ -18,6 +18,7 @@ literals in the unit tests.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
@@ -32,7 +33,12 @@ from app.models.approval import (
     ApprovalRequestStatus,
 )
 from app.models.match_history import InvoiceStatus, MatchHistory
+from app.models.notification import Notification, NotificationType
+from app.core.exceptions import ReceiptNotPossibleError
 from app.models.user import User
+from app.schemas.odoo import OdooReceiptResult
+from app.services import approval_service as approval_module
+from app.repositories.approval_repository import ApprovalRepository
 from app.services.approval_service import ApprovalService
 from tests.conftest import auth_header, login
 
@@ -99,6 +105,7 @@ async def _make_chain(
     *,
     active: bool = True,
     allow_self_approval: bool = False,
+    receipt_step: int | None = None,
 ) -> dict[str, Any]:
     response = await client.post(
         f"{APPROVALS}/chains",
@@ -108,8 +115,12 @@ async def _make_chain(
             "allow_self_approval": allow_self_approval,
             "is_active": active,
             "steps": [
-                {"name": name, "approver_user_ids": [str(u.id) for u in users]}
-                for name, users in steps
+                {
+                    "name": name,
+                    "approver_user_ids": [str(u.id) for u in users],
+                    "records_receipt": receipt_step == index,
+                }
+                for index, (name, users) in enumerate(steps, start=1)
             ],
         },
     )
@@ -121,7 +132,7 @@ async def _start(
     db: AsyncSession, invoice: MatchHistory, requester: User
 ) -> ApprovalRequest:
     request = await ApprovalService(db).request_approval(
-        invoice=invoice, requested_by=requester.id, lines=LINES
+        invoice=invoice, requested_by=requester.id, po_id=PO_ID, lines=LINES
     )
     await db.commit()
     return request
@@ -626,6 +637,427 @@ class TestInvoiceApprovalRead:
         # panel renders rather than a fresh preview.
         assert body["lines"][0]["po_line_id"] == 10
         assert body["lines"][0]["unit_price"] == 10.0
+
+
+class TestReceivingStep:
+    """The leg of the three-way match the system used to take on trust.
+
+    Odoo is stubbed at `approval_service.odoo_for_invoice`, which is the seam
+    the service actually reaches through. What is under test is the ORDERING —
+    the receipt first, the decision only if it worked — because
+    `receive_purchase_order_lines` is the one call here that cannot be undone.
+    """
+
+    @staticmethod
+    def _stub(monkeypatch, *, raises: Exception | None = None) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        class _Odoo:
+            @staticmethod
+            async def receive_purchase_order_lines(*, po_id: int, quantities):
+                if raises is not None:
+                    raise raises
+                seen["po_id"] = po_id
+                seen["quantities"] = dict(quantities)
+                return OdooReceiptResult(
+                    picking_id=91,
+                    picking_name="WH/IN/00042",
+                    backorder_names=["WH/IN/00043"],
+                    received={10: 50.0},
+                )
+
+        async def _resolve(_db, _invoice):
+            return _Odoo()
+
+        monkeypatch.setattr(approval_module, "odoo_for_invoice", _resolve)
+        return seen
+
+    async def test_two_receiving_steps_are_refused(
+        self,
+        client: AsyncClient,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        """The second would find no open receipt left and fail mid-chain, on
+        somebody who did nothing wrong."""
+        headers = await _token(client, admin_user, password)
+        response = await client.post(
+            f"{APPROVALS}/chains",
+            headers=headers,
+            json={
+                "name": "Two receipts",
+                "steps": [
+                    {
+                        "name": "Receiving",
+                        "approver_user_ids": [str(manager_user.id)],
+                        "records_receipt": True,
+                    },
+                    {
+                        "name": "Receiving again",
+                        "approver_user_ids": [str(admin_user.id)],
+                        "records_receipt": True,
+                    },
+                ],
+            },
+        )
+        assert response.status_code == 422, response.text
+        assert "once" in response.text
+
+    async def test_the_request_records_which_order_it_is_for(
+        self,
+        db: AsyncSession,
+        client: AsyncClient,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        """Stored rather than re-derived: the lines snapshot holds po_line_ids
+        and never the order they belong to, and reading final_po_id later would
+        consult a field a reviewer may have changed since."""
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Admin", [admin_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        assert request.po_id == PO_ID
+
+    async def test_approving_a_receiving_step_posts_the_receipt(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The step stops being a formality that only unblocks somebody else."""
+        seen = self._stub(monkeypatch)
+        admin_headers = await _token(client, admin_user, password)
+        await _make_chain(
+            client,
+            admin_headers,
+            [("Receiving", [existing_user]), ("Admin", [admin_user])],
+            receipt_step=1,
+        )
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+
+        member_headers = await _token(client, existing_user, password)
+        response = await _decide(client, member_headers, request.id, approve=True)
+        assert response.status_code == 200, response.text
+
+        # The quantities posted are the ones the approver was looking at, not a
+        # fresh read from anywhere else.
+        assert seen["po_id"] == PO_ID
+        assert seen["quantities"] == {10: 50.0}
+
+        body = response.json()["data"]
+        assert body["receipt"]["picking_name"] == "WH/IN/00042"
+        assert body["receipt"]["backorders"] == ["WH/IN/00043"]
+        assert body["receipt"]["recorded_by"] == str(existing_user.id)
+        assert body["current_position"] == 2
+
+    async def test_a_refused_receipt_writes_nothing(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The ordering that matters. Recording the approval first would leave a
+        chain advanced past a receipt that never happened."""
+        self._stub(
+            monkeypatch, raises=ReceiptNotPossibleError("No open receipt in Odoo.")
+        )
+        admin_headers = await _token(client, admin_user, password)
+        await _make_chain(
+            client,
+            admin_headers,
+            [("Receiving", [existing_user]), ("Admin", [admin_user])],
+            receipt_step=1,
+        )
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+
+        member_headers = await _token(client, existing_user, password)
+        response = await _decide(client, member_headers, request.id, approve=True)
+        assert response.status_code == 409, response.text
+
+        refreshed = (
+            await db.execute(
+                select(ApprovalRequest).where(ApprovalRequest.id == request.id)
+            )
+        ).scalar_one()
+        assert refreshed.status is ApprovalRequestStatus.PENDING
+        assert refreshed.current_position == 1
+        assert refreshed.receipt is None
+
+        decisions = (
+            (
+                await db.execute(
+                    select(ApprovalDecisionRecord).where(
+                        ApprovalDecisionRecord.request_id == request.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert decisions == []
+
+    async def test_declining_a_receiving_step_posts_nothing(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """"The goods did not arrive" is exactly what a decline on this rung
+        means, so it must not post a receipt saying they did."""
+        seen = self._stub(monkeypatch)
+        admin_headers = await _token(client, admin_user, password)
+        await _make_chain(
+            client, admin_headers, [("Receiving", [existing_user])], receipt_step=1
+        )
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+
+        member_headers = await _token(client, existing_user, password)
+        response = await _decide(
+            client, member_headers, request.id, approve=False, reason="Short by 12"
+        )
+        assert response.status_code == 200, response.text
+        assert seen == {}
+
+        refreshed = (
+            await db.execute(
+                select(ApprovalRequest).where(ApprovalRequest.id == request.id)
+            )
+        ).scalar_one()
+        assert refreshed.receipt is None
+
+
+class TestOverdueReminders:
+    """What stops a chain being forgotten rather than refused.
+
+    Time is moved by ageing the row rather than by patching a clock: the rule
+    under test is a comparison against `current_step_since`, and a test that
+    froze `now()` instead would prove the mock works.
+    """
+
+    @staticmethod
+    async def _age(db: AsyncSession, request: ApprovalRequest, hours: float) -> None:
+        request.current_step_since = dt.datetime.now(dt.UTC) - dt.timedelta(
+            hours=hours
+        )
+        await db.commit()
+
+    @staticmethod
+    async def _notifications(
+        db: AsyncSession, user_id, type: NotificationType
+    ) -> int:
+        rows = (
+            (
+                await db.execute(
+                    select(Notification).where(
+                        Notification.user_id == user_id,
+                        Notification.type == type,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return len(rows)
+
+    async def test_a_fresh_request_is_not_overdue(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Admin", [admin_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+
+        overdue = await ApprovalRepository(db).find_overdue(
+            waiting_since=dt.datetime.now(dt.UTC) - dt.timedelta(hours=24),
+            nudged_before=dt.datetime.now(dt.UTC) - dt.timedelta(hours=24),
+        )
+        assert request.id not in overdue
+
+    async def test_a_rung_that_has_sat_is_found_and_nudged(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+    ) -> None:
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Receiving", [existing_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=30)
+
+        before = await self._notifications(
+            db, existing_user.id, NotificationType.APPROVAL_REQUESTED
+        )
+        assert await ApprovalService(db).nudge(request.id) is True
+        await db.commit()
+
+        after = await self._notifications(
+            db, existing_user.id, NotificationType.APPROVAL_REQUESTED
+        )
+        assert after == before + 1
+
+    async def test_nudging_twice_in_a_row_sends_once(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+    ) -> None:
+        """The sweep runs every five minutes. Without `reminded_at` it would
+        notify every five minutes, which is how a reminder becomes noise people
+        filter out."""
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Receiving", [existing_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=30)
+
+        await ApprovalService(db).nudge(request.id)
+        await db.commit()
+
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(hours=24)
+        again = await ApprovalRepository(db).find_overdue(
+            waiting_since=cutoff, nudged_before=cutoff
+        )
+        assert request.id not in again
+
+    async def test_a_long_wait_also_tells_the_admins(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+    ) -> None:
+        """The escalation, and the thing that eventually gets somebody to cancel
+        a chain nobody can satisfy."""
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Receiving", [existing_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=100)
+
+        await ApprovalService(db).nudge(request.id)
+        await db.commit()
+
+        assert (
+            await self._notifications(
+                db, admin_user.id, NotificationType.APPROVAL_OVERDUE
+            )
+            == 1
+        )
+
+    async def test_an_admin_on_the_rung_is_not_told_twice(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        """"Still waiting on you" and "somebody is not responding" about the same
+        rung, to the same person, reads as a bug."""
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Admin", [admin_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=100)
+
+        await ApprovalService(db).nudge(request.id)
+        await db.commit()
+
+        assert (
+            await self._notifications(
+                db, admin_user.id, NotificationType.APPROVAL_OVERDUE
+            )
+            == 0
+        )
+        assert (
+            await self._notifications(
+                db, admin_user.id, NotificationType.APPROVAL_REQUESTED
+            )
+            >= 1
+        )
+
+    async def test_advancing_restarts_the_clock(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+    ) -> None:
+        """A rung that took three days to decide must not make the next
+        approver's first notification a reminder about somebody else."""
+        admin_headers = await _token(client, admin_user, password)
+        await _make_chain(
+            client,
+            admin_headers,
+            [("Receiving", [existing_user]), ("Admin", [admin_user])],
+        )
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=100)
+
+        member_headers = await _token(client, existing_user, password)
+        assert (
+            await _decide(client, member_headers, request.id, approve=True)
+        ).status_code == 200
+
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(hours=24)
+        overdue = await ApprovalRepository(db).find_overdue(
+            waiting_since=cutoff, nudged_before=cutoff
+        )
+        assert request.id not in overdue
+
+    async def test_a_decided_request_is_never_nudged(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        """Decided between the sweep selecting it and the task running. Normal,
+        not an error — the whole point is that somebody acts on these."""
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Admin", [admin_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await self._age(db, request, hours=100)
+        await _decide(client, headers, request.id, approve=True)
+
+        assert await ApprovalService(db).nudge(request.id) is False
 
 
 # ---------------------------------------------------------------------------

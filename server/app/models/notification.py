@@ -50,6 +50,10 @@ class NotificationType(str, enum.Enum):
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_DECLINED = "approval_declined"
+    #: To the company's admins, not to the approver. "Your approval is needed"
+    #: would be false — it is not their step; what they are being told is that
+    #: somebody else's has been sitting.
+    APPROVAL_OVERDUE = "approval_overdue"
 
 
 class Notification(UUIDPrimaryKeyMixin, CompanyScopedMixin, Base):

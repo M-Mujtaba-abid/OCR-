@@ -39,8 +39,26 @@ export interface ApprovalStepProgress {
   position: number;
   name: string;
   approver_user_ids: string[];
+  /** Approving this rung posts the goods receipt in Odoo. Irreversible. */
+  records_receipt: boolean;
   decision: ApprovalDecision | null;
   is_current: boolean;
+}
+
+/**
+ * What Odoo did when a receiving step was approved.
+ *
+ * `picking_name` is the handle a person reconciles against Odoo with, which is
+ * why it is worth surfacing rather than keeping as an internal id.
+ */
+export interface ApprovalReceipt {
+  picking_id: number;
+  picking_name: string;
+  backorders: string[];
+  received: Record<string, number>;
+  position: number;
+  recorded_by: string;
+  recorded_at: string;
 }
 
 export interface ApprovalRequest {
@@ -56,8 +74,23 @@ export interface ApprovalRequest {
   requested_by: string | null;
   requester: InvoiceUploader | null;
   created_at: string;
+  /** When the CURRENT step started waiting, not the age of the request. */
+  current_step_since: string;
+  /**
+   * Whole days the current step has been waiting.
+   *
+   * Computed server-side rather than from `current_step_since` here: a value
+   * derived from the browser clock during render is unstable across re-renders
+   * and wrong on a machine whose time is off. It is also the same figure the
+   * overdue reminder quotes, so the screen and the notification agree.
+   */
+  waiting_days: number;
   steps: ApprovalStepProgress[];
   lines: ApprovalLine[];
+  /** The Odoo order these lines belong to. */
+  po_id: number | null;
+  /** Null until a receiving step is approved. */
+  receipt: ApprovalReceipt | null;
 }
 
 /**
@@ -89,6 +122,7 @@ export interface ApprovalStep {
   position: number;
   name: string;
   approver_user_ids: string[];
+  records_receipt: boolean;
 }
 
 export interface ApprovalChain {
@@ -103,7 +137,11 @@ export interface ApprovalChain {
 
 export interface SaveChainInput {
   name: string;
-  steps: { name: string; approver_user_ids: string[] }[];
+  steps: {
+    name: string;
+    approver_user_ids: string[];
+    records_receipt?: boolean;
+  }[];
   allow_self_approval?: boolean;
   is_active?: boolean;
 }

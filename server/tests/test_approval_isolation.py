@@ -17,18 +17,22 @@ the id is real, which is the one thing a probe is looking for.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password
 from app.models.approval import ApprovalRequest
+from app.models.notification import Notification
 from app.models.company import Company
 from app.models.match_history import InvoiceStatus, MatchHistory
 from app.models.user import User, UserRole
+from app.repositories.approval_repository import ApprovalRepository
 from app.repositories.user_repository import UserRepository
 from app.services.approval_service import ApprovalService
 from tests.conftest import auth_header, login
@@ -90,6 +94,7 @@ async def _rival(db: AsyncSession, password: str) -> dict[str, Any]:
     request = await service.request_approval(
         invoice=invoice,
         requested_by=owner.id,
+        po_id=7777,
         lines=[
             {
                 "po_line_id": 99,
@@ -303,3 +308,74 @@ async def test_an_active_chain_in_one_company_does_not_gate_another(
     # It still fails — there is no Odoo here — but it must fail past the gate.
     code = response.json().get("error", {}).get("code")
     assert code not in {"APPROVAL_REQUIRED", "APPROVAL_PENDING"}, response.text
+
+
+async def test_the_overdue_sweep_is_cross_company_but_its_nudges_are_not(
+    client: AsyncClient, db: AsyncSession, admin_user: User, password: str
+) -> None:
+    """The one place the two rules meet, and the reason the sweep is allowed to
+    be cross-company at all.
+
+    `find_overdue` deliberately spans companies — a request stuck in one company
+    must not stay stuck because nobody in another triggered a sweep — and it is
+    safe only because it returns ids and nothing else. The nudge that follows
+    loads the row, takes the company from it, and notifies inside that company
+    alone.
+
+    So: the sweep sees the rival's request (by design), and our administrator
+    hears nothing about it (also by design). Both halves are asserted here,
+    because either one alone is the wrong system.
+    """
+    rival = await _rival(db, password)
+
+    # Both companies now have a pending request that has been sitting.
+    ours = MatchHistory(
+        company_id=admin_user.company_id,
+        uploaded_by=admin_user.id,
+        file_name="ours.pdf",
+        file_key=f"invoices/test/2026-08/{uuid.uuid4().hex}_ours.pdf",
+        file_url="https://example.invalid/ours.pdf",
+        status=InvoiceStatus.CONFIRMED,
+        extracted_json={"vendor_name": "Ours", "items": []},
+    )
+    db.add(ours)
+    await db.flush()
+
+    stale = dt.datetime.now(dt.UTC) - dt.timedelta(hours=100)
+    rival["request"].current_step_since = stale
+    await db.commit()
+
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(hours=24)
+    overdue = await ApprovalRepository(db).find_overdue(
+        waiting_since=cutoff, nudged_before=cutoff
+    )
+    # Cross-company by design: the scheduler has no company to scope to.
+    assert rival["request"].id in overdue
+
+    before = len(
+        (
+            await db.execute(
+                select(Notification).where(Notification.user_id == admin_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    await ApprovalService(db).nudge(rival["request"].id)
+    await db.commit()
+
+    after = (
+        (
+            await db.execute(
+                select(Notification).where(Notification.user_id == admin_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Not one word of it reached this company — not even the escalation, which
+    # goes to "the admins" and would be the easy place to resolve the wrong set.
+    assert len(after) == before
+    assert all(n.company_id == admin_user.company_id for n in after)
+    assert "rival-secret.pdf" not in " ".join(n.title for n in after)

@@ -75,6 +75,12 @@ function AwaitingRow({ item }: { item: AwaitingItem }) {
   const [reason, setReason] = useState("");
 
   const request = item.request;
+  // The rung they are about to decide. Whether it posts the goods receipt
+  // changes what Approve MEANS here, so it has to be said before the click and
+  // not discovered in Odoo afterwards.
+  const current = request.steps.find((step) => step.is_current);
+  const posts = current?.records_receipt ?? false;
+  const waitingDays = request.waiting_days;
   const total = request.lines.reduce(
     (sum, line) => sum + line.quantity * line.unit_price * (1 + line.tax_rate),
     0,
@@ -94,9 +100,25 @@ function AwaitingRow({ item }: { item: AwaitingItem }) {
               ` · asked by ${request.requester.full_name || request.requester.email}`}
           </p>
         </div>
-        <p className="shrink-0 text-sm font-medium text-sky-700 dark:text-sky-300">
-          Step {item.step_position} · {item.step_name}
-        </p>
+        <div className="shrink-0 text-right">
+          <p className="text-sm font-medium text-sky-700 dark:text-sky-300">
+            Step {item.step_position} · {item.step_name}
+          </p>
+          {/* Only once it has actually been sitting. "Waiting 0 days" on
+              something that arrived this morning is noise, and noise is what
+              makes the number stop meaning anything when it matters. */}
+          {waitingDays >= 1 && (
+            <p
+              className={
+                waitingDays >= 3
+                  ? "text-xs font-medium text-amber-700 dark:text-amber-400"
+                  : "text-xs text-slate-500 dark:text-slate-500"
+              }
+            >
+              waiting {waitingDays} day{waitingDays === 1 ? "" : "s"}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* The lines as they were approved-for, from the request's snapshot.
@@ -130,6 +152,17 @@ function AwaitingRow({ item }: { item: AwaitingItem }) {
         </Link>
       )}
 
+      {posts && !declining && (
+        <div className="mt-4">
+          <Alert variant="info">
+            Approving this step records the goods receipt in Odoo for exactly
+            these quantities, and backorders the rest. The stock movement is
+            real from that moment and is not returned if the invoice is declined
+            later — so approve it when the goods are actually here.
+          </Alert>
+        </div>
+      )}
+
       {!declining ? (
         <div className="mt-5 flex flex-wrap gap-3">
           <Button
@@ -141,7 +174,7 @@ function AwaitingRow({ item }: { item: AwaitingItem }) {
               })
             }
           >
-            Approve
+            {posts ? "Received — approve" : "Approve"}
           </Button>
           <Button variant="secondary" onClick={() => setDeclining(true)}>
             Decline…

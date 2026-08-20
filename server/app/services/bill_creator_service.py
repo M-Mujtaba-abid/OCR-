@@ -662,6 +662,24 @@ async def create_bill_for_invoice(
     # nothing, for a company with no active chain.
     approval = await ApprovalService(db).gate_for_billing(invoice)
 
+    # If a receiving step already posted the receipt, the biller's checkbox must
+    # not post it again.
+    #
+    # Overridden rather than validated, because the client is not wrong to have
+    # sent it — `receive_goods` defaults to true and the person clicking has no
+    # way to know a step three rungs back already moved the stock. A second
+    # `button_validate` would either fail on NO_OPEN_RECEIPT or, worse, receive a
+    # backorder nobody has delivered.
+    if approval is not None and approval.receipt is not None and receive_goods:
+        logger.info(
+            "bill.receipt_already_recorded_by_chain",
+            extra={
+                "invoice_id": str(invoice.id),
+                "picking": approval.receipt.get("picking_name"),
+            },
+        )
+        receive_goods = False
+
     # Resolved from the invoice, so every Odoo call below — the duplicate
     # search, the receipt, the bill itself — goes to the company that owns it.
     odoo = await odoo_for_invoice(db, invoice)

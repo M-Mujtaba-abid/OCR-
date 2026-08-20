@@ -156,6 +156,9 @@ const TONE: Record<NotificationType, string> = {
   approval_requested: "bg-sky-600 dark:bg-sky-500",
   approval_granted: "bg-emerald-600",
   approval_declined: "bg-red-600 dark:bg-red-500",
+  // Amber, not red: nobody has refused anything. Something is simply not
+  // moving, and that is a nudge rather than a failure.
+  approval_overdue: "bg-amber-500 dark:bg-[#bf8618]",
 };
 
 function NotificationRow({

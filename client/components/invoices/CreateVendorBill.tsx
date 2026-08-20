@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { useInvoiceApproval } from "@/hooks/approval/useApprovals.hooks";
 import { useBillPreview, useCreateBill } from "@/hooks/invoice/useInvoices.hooks";
 import { money, percent } from "@/lib/format";
 import type {
@@ -38,7 +39,19 @@ export function CreateVendorBill({ invoice }: { invoice: InvoiceDetail }) {
   const [edited, setEdited] = useState<Record<number, number>>({});
   const [ref, setRef] = useState<string | null>(null);
   const [attach, setAttach] = useState(true);
-  const [receive, setReceive] = useState(true);
+  const [receiveChecked, setReceive] = useState(true);
+  // Whether a receiving step in the approval chain already posted the receipt.
+  // Shares its cache with the approval panel above, so this costs no request.
+  const approval = useInvoiceApproval(invoice.id);
+  const receiptDone = Boolean(approval.data?.request?.receipt);
+
+  // Derived, not synchronised. The server overrides `receive_goods` in this
+  // case regardless — a second button_validate would either fail or receive a
+  // backorder nobody delivered — but a checkbox that stays ticked while the
+  // server ignores it is a lie about what is going to happen. An effect writing
+  // the state back would be a second source of truth for something one
+  // expression already answers.
+  const receive = receiptDone ? false : receiveChecked;
 
   const billed = invoice.status === "pushed" || invoice.pushed_to_odoo;
   const preview = useBillPreview(invoice.id, open && !billed);
@@ -95,6 +108,10 @@ export function CreateVendorBill({ invoice }: { invoice: InvoiceDetail }) {
               onAttach={setAttach}
               receive={receive}
               onReceive={setReceive}
+              receiptDone={receiptDone}
+              receiptName={
+                approval.data?.request?.receipt?.picking_name ?? null
+              }
               creating={createBill.isPending}
               result={createBill.data}
               onCancel={() => setOpen(false)}
@@ -207,6 +224,8 @@ function PreviewBody({
   onAttach,
   receive,
   onReceive,
+  receiptDone,
+  receiptName,
   creating,
   result,
   onCancel,
@@ -220,6 +239,8 @@ function PreviewBody({
   attach: boolean;
   onAttach: (value: boolean) => void;
   receive: boolean;
+  receiptDone: boolean;
+  receiptName: string | null;
   onReceive: (value: boolean) => void;
   creating: boolean;
   result?: CreateBillResult;
@@ -466,17 +487,27 @@ function PreviewBody({
               type="checkbox"
               checked={receive}
               onChange={(event) => onReceive(event.target.checked)}
+              disabled={receiptDone}
               className="mt-1"
             />
             <span>
               <span className="font-medium text-slate-900 dark:text-white">
                 Record the goods receipt
               </span>
-              <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
-                Receives these quantities in Odoo and backorders the rest. This
-                cannot be undone from here. Untick only if the receipt has
-                already been validated in Odoo.
-              </span>
+              {receiptDone ? (
+                <span className="mt-0.5 block text-xs text-emerald-700 dark:text-emerald-400">
+                  Already done by the approval chain
+                  {receiptName ? ` — ${receiptName}` : ""}. The person who
+                  checked the parcel posted it when they approved their step, so
+                  there is nothing left to receive here.
+                </span>
+              ) : (
+                <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                  Receives these quantities in Odoo and backorders the rest. This
+                  cannot be undone from here. Untick only if the receipt has
+                  already been validated in Odoo.
+                </span>
+              )}
             </span>
           </label>
           <label className="flex items-start gap-2">

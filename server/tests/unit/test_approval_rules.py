@@ -18,6 +18,7 @@ from app.services.approval_service import (
     is_final_step,
     may_decide,
     step_at,
+    step_records_receipt,
 )
 from app.services.bill_creator_service import check_exceeds_approval
 
@@ -49,12 +50,18 @@ class _Request:
         self.decisions = decisions or []
 
 
-def _step(position: int, *approvers: uuid.UUID, name: str = "Step") -> dict[str, Any]:
+def _step(
+    position: int,
+    *approvers: uuid.UUID,
+    name: str = "Step",
+    records_receipt: bool = False,
+) -> dict[str, Any]:
     # UUIDs as strings, exactly as JSONB gives them back.
     return {
         "position": position,
         "name": f"{name} {position}",
         "approver_user_ids": [str(a) for a in approvers],
+        "records_receipt": records_receipt,
     }
 
 
@@ -153,6 +160,33 @@ class TestMayDecide:
             decisions=[_Decision(1, alice)],
         )
         assert may_decide(request, user_id=bob, position=2)
+
+
+class TestReceivingStep:
+    def test_a_rung_marked_for_receipt_says_so(self) -> None:
+        alice = uuid.uuid4()
+        request = _Request(steps=[_step(1, alice, records_receipt=True)])
+        assert step_records_receipt(request, 1)
+
+    def test_an_ordinary_rung_does_not(self) -> None:
+        alice = uuid.uuid4()
+        assert not step_records_receipt(_Request(steps=[_step(1, alice)]), 1)
+
+    def test_a_snapshot_written_before_the_flag_existed_does_not(self) -> None:
+        """Old requests have no `records_receipt` key at all, and a missing key
+        must read as "no" rather than raise."""
+        alice = uuid.uuid4()
+        old = {
+            "position": 1,
+            "name": "Legacy",
+            "approver_user_ids": [str(alice)],
+        }
+        assert not step_records_receipt(_Request(steps=[old]), 1)
+
+    def test_a_position_the_chain_does_not_have_does_not(self) -> None:
+        alice = uuid.uuid4()
+        request = _Request(steps=[_step(1, alice, records_receipt=True)])
+        assert not step_records_receipt(request, 2)
 
 
 # ---------------------------------------------------------------------------

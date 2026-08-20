@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     # merely slow gets restarted underneath itself.
     STUCK_AFTER_MINUTES: int = Field(default=10, ge=2, le=1440)
 
+    # How long one rung of an approval chain may sit undecided before the sweep
+    # nudges whoever it is waiting on, and how often it repeats. Hours rather
+    # than minutes because the thing being measured is a person reading their
+    # queue, not a process that crashed.
+    APPROVAL_REMIND_AFTER_HOURS: int = Field(default=24, ge=1, le=720)
+
+    # And when to stop nudging only the approver and tell the company's admins
+    # too. Above the reminder interval by default: an approval that is a day old
+    # is normal, one that is three days old is somebody's problem.
+    APPROVAL_ESCALATE_AFTER_HOURS: int = Field(default=72, ge=1, le=2160)
+
     # NoDecode stops pydantic-settings from json.loads()-ing the raw env string
     # before the validator runs, which is what lets `A,B` work as well as JSON.
     CORS_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]

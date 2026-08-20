@@ -69,6 +69,16 @@ export function ApprovalPanel({ invoice }: { invoice: InvoiceDetail }) {
         </p>
       )}
 
+      {request?.receipt && (
+        <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
+          Goods receipt {request.receipt.picking_name} was posted in Odoo when
+          step {request.receipt.position} was approved
+          {request.receipt.backorders.length > 0 &&
+            `, with ${request.receipt.backorders.join(", ")} left as a backorder`}
+          .
+        </p>
+      )}
+
       {request && (
         <>
           <ol className="mt-5 space-y-0">
@@ -92,7 +102,13 @@ export function ApprovalPanel({ invoice }: { invoice: InvoiceDetail }) {
       {request &&
         request.status === "pending" &&
         awaiting.data?.some((row) => row.request.id === request.id) && (
-          <DecideBox requestId={request.id} />
+          <DecideBox
+            requestId={request.id}
+            posts={
+              request.steps.find((step) => step.is_current)?.records_receipt ??
+              false
+            }
+          />
         )}
 
       {canSend && <SendBox invoice={invoice} resubmit={Boolean(request)} />}
@@ -232,9 +248,16 @@ function StatusLine({ request }: { request: ApprovalRequest }) {
     cancelled: "Pulled out of the chain by an administrator",
   } as const;
 
+  const waitingDays = request.waiting_days;
+
   return (
     <p className={`text-sm font-medium ${TONE[request.status]}`}>
       {WORDS[request.status]}
+      {request.status === "pending" && waitingDays >= 1 && (
+        <span className="ml-1 font-normal text-slate-500 dark:text-slate-500">
+          · {waitingDays} day{waitingDays === 1 ? "" : "s"}
+        </span>
+      )}
     </p>
   );
 }
@@ -291,6 +314,11 @@ function StepRow({
         <p className="text-sm font-medium text-slate-900 dark:text-white">
           {step.position}. {step.name}
         </p>
+        {step.records_receipt && (
+          <p className="mt-0.5 text-xs text-sky-700 dark:text-sky-400">
+            Posts the goods receipt in Odoo
+          </p>
+        )}
         <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
           {outcome}
           {decision?.decided_by === currentUserId && decision && " by you"}
@@ -361,25 +389,40 @@ function ApprovedAmount({ request }: { request: ApprovalRequest }) {
   );
 }
 
-function DecideBox({ requestId }: { requestId: string }) {
+function DecideBox({
+  requestId,
+  posts,
+}: {
+  requestId: string;
+  posts: boolean;
+}) {
   const decide = useDecideApproval();
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
 
   if (!declining) {
     return (
-      <div className="mt-5 flex flex-wrap gap-3 border-t border-slate-200 pt-5 dark:border-slate-800">
+      <div className="mt-5 space-y-3 border-t border-slate-200 pt-5 dark:border-slate-800">
+        {posts && (
+          <Alert variant="info">
+            Approving this step records the goods receipt in Odoo for exactly
+            these quantities. The stock movement is real from that moment and is
+            not returned if the invoice is declined later.
+          </Alert>
+        )}
+        <div className="flex flex-wrap gap-3">
         <Button
           onClick={() =>
             decide.mutate({ requestId, input: { approve: true } })
           }
           isLoading={decide.isPending}
         >
-          Approve
+          {posts ? "Received — approve" : "Approve"}
         </Button>
         <Button variant="secondary" onClick={() => setDeclining(true)}>
           Decline…
         </Button>
+        </div>
       </div>
     );
   }
