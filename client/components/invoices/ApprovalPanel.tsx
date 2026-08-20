@@ -4,8 +4,9 @@ import { useState } from "react";
 
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { Skeleton, SkeletonSteps } from "@/components/ui/Skeleton";
 import {
-  useAwaitingMe,
   useCancelApproval,
   useDecideApproval,
   useInvoiceApproval,
@@ -33,10 +34,55 @@ import type { InvoiceDetail } from "@/types/invoice.type";
 export function ApprovalPanel({ invoice }: { invoice: InvoiceDetail }) {
   const { user, can } = useAuth();
   const approval = useInvoiceApproval(invoice.id);
-  const awaiting = useAwaitingMe();
 
-  if (approval.isLoading || !approval.data) return null;
-  const { chain_active: gated, chain_name: chainName, request } = approval.data;
+  // A shaped placeholder rather than nothing. Returning null meant the panel
+  // popped into existence a beat after the rest of the page and pushed the
+  // billing section down with it — on the one screen where "can this be billed"
+  // is the question being answered.
+  if (approval.isLoading) {
+    return (
+      <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+        <Skeleton className="h-4 w-24" />
+        <div className="mt-5">
+          <SkeletonSteps rows={3} label="Loading approval status" />
+        </div>
+      </section>
+    );
+  }
+
+  // Said out loud rather than disappearing. This panel is the only thing that
+  // explains why billing is blocked, so a silent failure leaves an admin
+  // looking at a Create-bill button that answers 409 for no visible reason.
+  if (approval.isError || !approval.data) {
+    return (
+      <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+            Approval
+          </h2>
+          <RefreshButton
+            onRefresh={() => void approval.refetch()}
+            refreshing={approval.isFetching}
+            what="approval status"
+            size="sm"
+          />
+        </div>
+        <div className="mt-3">
+          <Alert variant="error">
+            The approval status could not be loaded, so this screen cannot say
+            whether this invoice may be billed. Refresh to try again.
+          </Alert>
+        </div>
+      </section>
+    );
+  }
+
+  const {
+    chain_active: gated,
+    chain_name: chainName,
+    request,
+    can_decide: canDecide,
+  } = approval.data;
 
   // No request and no active chain: this company does not gate billing, so a
   // panel explaining an absent process is just noise on the screen.
@@ -55,11 +101,21 @@ export function ApprovalPanel({ invoice }: { invoice: InvoiceDetail }) {
 
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
-      <div className="flex flex-wrap items-baseline justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
           Approval
         </h2>
-        {request && <StatusLine request={request} />}
+        <div className="flex items-center gap-3">
+          {request && <StatusLine request={request} />}
+          {/* Somebody else decides these steps, so there is no local event to
+              invalidate on — the only way this screen learns is by asking. */}
+          <RefreshButton
+            onRefresh={() => void approval.refetch()}
+            refreshing={approval.isFetching}
+            what="approval status"
+            size="sm"
+          />
+        </div>
       </div>
 
       {!request && (
@@ -99,17 +155,15 @@ export function ApprovalPanel({ invoice }: { invoice: InvoiceDetail }) {
       {/* Whether it is my turn is answered by the server, not recomputed here.
           The rules — named on the rung, not the requester, not already having
           decided — are subtle enough that a second copy of them would drift. */}
-      {request &&
-        request.status === "pending" &&
-        awaiting.data?.some((row) => row.request.id === request.id) && (
-          <DecideBox
-            requestId={request.id}
-            posts={
-              request.steps.find((step) => step.is_current)?.records_receipt ??
-              false
-            }
-          />
-        )}
+      {request && canDecide && (
+        <DecideBox
+          requestId={request.id}
+          posts={
+            request.steps.find((step) => step.is_current)?.records_receipt ??
+            false
+          }
+        />
+      )}
 
       {canSend && <SendBox invoice={invoice} resubmit={Boolean(request)} />}
 

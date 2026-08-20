@@ -5,6 +5,8 @@ import Link from "next/link";
 
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import { useAwaitingMe, useDecideApproval } from "@/hooks/approval/useApprovals.hooks";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import { money } from "@/lib/format";
@@ -30,20 +32,28 @@ export default function ApprovalsPage() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-white">
-          Awaiting you
-        </h1>
-        <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-          Invoices that cannot be billed until you decide. Approving passes it to
-          the next step; declining sends it back to whoever asked, with your
-          reason.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-white">
+            Awaiting you
+          </h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+            Invoices that cannot be billed until you decide. Approving passes it
+            to the next step; declining sends it back to whoever asked, with your
+            reason.
+          </p>
+        </div>
+        {/* This list changes because somebody else acted, never because of
+            anything done on this screen. It polls, but a person who has just
+            been told to look should not have to wait out the interval. */}
+        <RefreshButton
+          onRefresh={() => void awaiting.refetch()}
+          refreshing={awaiting.isFetching}
+          what="your approvals"
+        />
       </header>
 
-      {awaiting.isLoading && (
-        <p className="text-sm text-slate-600 dark:text-slate-400">Loading…</p>
-      )}
+      {awaiting.isLoading && <SkeletonList rows={2} label="Loading your approvals" />}
 
       {awaiting.isError && (
         <Alert variant="error">

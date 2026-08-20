@@ -4,6 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import {
   ALL_STATUSES,
   InvoiceStatusBadge,
@@ -147,14 +149,17 @@ export function InvoiceTable({
 
             {/* Rows added by other people do not push themselves into an open
                 table — there is no server push yet. */}
-            <Button variant="ghost" onClick={onRefresh} disabled={refreshing}>
-              {refreshing ? "Refreshing…" : "Refresh"}
-            </Button>
+            <RefreshButton
+              onRefresh={onRefresh}
+              refreshing={refreshing}
+              what="invoices"
+              size="sm"
+            />
           </div>
         </div>
 
         {loading ? (
-          <p className="p-6 text-sm text-slate-600 dark:text-slate-400">Loading…</p>
+          <SkeletonTable rows={6} columns={5} label="Loading invoices" />
         ) : invoices.length === 0 ? (
           <p className="p-6 text-sm text-slate-600 dark:text-slate-400">
             {emptyMessage}

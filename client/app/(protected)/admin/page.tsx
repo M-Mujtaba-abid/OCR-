@@ -11,6 +11,8 @@ import { TrendChart } from "@/components/charts/TrendChart";
 import { BillHistoryPanel } from "@/components/invoices/BillHistoryPanel";
 import { InvoicesPanel } from "@/components/invoices/InvoicesPanel";
 import { Badge } from "@/components/ui/Badge";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonStats } from "@/components/ui/Skeleton";
 import { StatCard } from "@/components/ui/StatCard";
 import { TabPanel, Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
@@ -43,9 +45,24 @@ export default function AdminPage() {
   // different events — an upload changes invoice counts, a role change changes
   // user counts — and separate keys mean each refetches only when its own data
   // actually moved.
-  const { data: invoiceStats } = useAdminInvoiceStats();
-  const { data: userStats } = useUserStats();
+  const invoiceStatsQuery = useAdminInvoiceStats();
+  const userStatsQuery = useUserStats();
   const trend = useInvoiceTrend(14);
+
+  const { data: invoiceStats } = invoiceStatsQuery;
+  const { data: userStats } = userStatsQuery;
+
+  // One control for the three queries behind this header, because they are one
+  // thing to the reader: the numbers at the top of the page. Three separate
+  // refresh buttons would be three ways to leave the tiles disagreeing with
+  // each other.
+  const refreshingOverview =
+    invoiceStatsQuery.isFetching || userStatsQuery.isFetching || trend.isFetching;
+  const refreshOverview = () => {
+    void invoiceStatsQuery.refetch();
+    void userStatsQuery.refetch();
+    void trend.refetch();
+  };
 
   if (!user) return null;
 
@@ -92,9 +109,23 @@ export default function AdminPage() {
             {company.data ? `Admin insights · ${user.email}` : user.email}
           </p>
         </div>
-        <Badge tone="accent">{ROLE_LABEL.admin}</Badge>
+        <div className="flex items-center gap-3">
+          <RefreshButton
+            onRefresh={refreshOverview}
+            refreshing={refreshingOverview}
+            what="the figures"
+            size="sm"
+          />
+          <Badge tone="accent">{ROLE_LABEL.admin}</Badge>
+        </div>
       </header>
 
+      {/* The tiles read undefined as "not loaded" and render a dash, so the
+          skeleton is only for the very first paint — after that a refresh dims
+          rather than blanks. */}
+      {!invoiceStats && invoiceStatsQuery.isLoading ? (
+        <SkeletonStats count={4} label="Loading figures" />
+      ) : (
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="Needs action"
@@ -127,6 +158,7 @@ export default function AdminPage() {
           }
         />
       </div>
+      )}
 
       <div>
         <Tabs tabs={tabs} active={tab} onChange={setTab} label="Admin sections" />

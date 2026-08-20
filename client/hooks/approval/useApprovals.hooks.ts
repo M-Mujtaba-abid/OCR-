@@ -125,13 +125,19 @@ export function useDeleteChain() {
  * else acted, so there is no local event to invalidate on. The same reasoning —
  * and the same interval — as the notification bell.
  */
-export function useAwaitingMe(enabled = true) {
+export function useAwaitingMe(enabled = true, intervalMs = 30_000) {
   return useQuery({
     queryKey: queryKeys.approvals.awaiting,
     queryFn: () => approvalService.awaitingMe(),
     enabled,
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    // Caller's choice, because the two callers want different things from the
+    // same data. The Approvals page is being read right now and should feel
+    // live; the header badge is mounted on every page for every user and only
+    // has to be roughly right. One cache entry serves both — TanStack takes the
+    // shortest interval among live observers, so opening the page speeds the
+    // badge up too, and closing it lets both settle down.
+    refetchInterval: intervalMs,
     // Off deliberately, matching the bell: a background tab should not keep
     // polling a queue nobody is looking at.
     refetchIntervalInBackground: false,

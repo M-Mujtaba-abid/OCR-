@@ -9,6 +9,8 @@ import {
   useNotifications,
   useUnreadCount,
 } from "@/hooks/notification/useNotifications.hooks";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import { timeAgo } from "@/lib/format";
 import type { AppNotification, NotificationType } from "@/types/invoice.type";
@@ -94,6 +96,13 @@ export function NotificationBell({ className }: { className?: string }) {
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
               Notifications
             </h2>
+            <RefreshButton
+              onRefresh={() => void list.refetch()}
+              refreshing={list.isFetching}
+              what="notifications"
+              size="sm"
+              className="ml-auto"
+            />
             {count > 0 && (
               <button
                 type="button"
@@ -108,9 +117,18 @@ export function NotificationBell({ className }: { className?: string }) {
 
           <div className="max-h-[22rem] overflow-y-auto">
             {list.isLoading && (
-              <p className="px-4 py-6 text-sm text-slate-600 dark:text-slate-400">
-                Loading…
-              </p>
+              <div className="space-y-3 px-4 py-4">
+                {[0, 1, 2].map((row) => (
+                  <div key={row} className="flex gap-3">
+                    <Skeleton className="mt-1.5 size-2 shrink-0 rounded-full" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-3 w-3/4" />
+                      <Skeleton className="h-2.5 w-1/2" />
+                    </div>
+                  </div>
+                ))}
+                <span className="sr-only">Loading notifications</span>
+              </div>
             )}
             {!list.isLoading && items.length === 0 && (
               <p className="px-4 py-6 text-sm text-slate-600 dark:text-slate-400">

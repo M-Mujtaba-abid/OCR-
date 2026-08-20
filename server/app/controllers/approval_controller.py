@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError
 from app.lib.responses import ApiResponse
-from app.models.approval import ApprovalRequest
+from app.models.approval import ApprovalRequest, ApprovalRequestStatus
 from app.models.user import User
 from app.schemas.approval import (
     ApprovalChainRead,
@@ -24,7 +24,7 @@ from app.schemas.approval import (
     RequestApprovalRequest,
     SaveChainRequest,
 )
-from app.services.approval_service import ApprovalService
+from app.services.approval_service import ApprovalService, may_decide
 from app.services.bill_creator_service import quote_for_approval
 from app.services.invoice_service import InvoiceService
 
@@ -217,6 +217,15 @@ class ApprovalController:
                 chain_active=chain is not None,
                 chain_name=chain.name if chain else None,
                 request=None if request is None else _to_read(request),
+                can_decide=(
+                    request is not None
+                    and request.status is ApprovalRequestStatus.PENDING
+                    and may_decide(
+                        request,
+                        user_id=user.id,
+                        position=request.current_position,
+                    )
+                ),
             )
         )
 

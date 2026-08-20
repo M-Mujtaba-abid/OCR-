@@ -5,6 +5,8 @@ import { useState } from "react";
 import { AddUserForm } from "@/components/admin/AddUserForm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import {
   useChangeUserRole,
@@ -93,14 +95,17 @@ export function UsersPanel({ adminCount }: { adminCount: number }) {
               </select>
             </label>
 
-            <Button variant="ghost" onClick={() => void refetch()} disabled={isFetching}>
-              {isFetching ? "Refreshing…" : "Refresh"}
-            </Button>
+            <RefreshButton
+              onRefresh={() => void refetch()}
+              refreshing={isFetching}
+              what="users"
+              size="sm"
+            />
           </div>
         </div>
 
         {isLoading ? (
-          <p className="p-6 text-sm text-slate-600 dark:text-slate-400">Loading…</p>
+          <SkeletonTable rows={5} columns={4} label="Loading users" />
         ) : !data || data.items.length === 0 ? (
           <p className="p-6 text-sm text-slate-600 dark:text-slate-400">
             No users match this filter.

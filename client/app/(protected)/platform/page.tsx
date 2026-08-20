@@ -5,6 +5,8 @@ import { useState } from "react";
 import { AddCompanyForm } from "@/components/platform/AddCompanyForm";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import { StatCard } from "@/components/ui/StatCard";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import {
@@ -99,17 +101,15 @@ export default function PlatformPage() {
                 ? "Loading…"
                 : "—"}
           </p>
-          <Button
-            variant="ghost"
-            onClick={() => void companies.refetch()}
-            disabled={companies.isFetching}
-          >
-            {companies.isFetching ? "Refreshing…" : "Refresh"}
-          </Button>
+          <RefreshButton
+            onRefresh={() => void companies.refetch()}
+            refreshing={companies.isFetching}
+            what="companies"
+          />
         </div>
 
         {companies.isLoading ? (
-          <p className="p-6 text-sm text-slate-600 dark:text-slate-400">Loading…</p>
+          <SkeletonTable rows={4} columns={4} label="Loading companies" />
         ) : companies.isError ? (
           <p className="p-6 text-sm text-red-700 dark:text-red-400">
             The company list could not be loaded.

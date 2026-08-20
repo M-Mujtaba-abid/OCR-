@@ -105,6 +105,14 @@ export interface InvoiceApproval {
   chain_active: boolean;
   chain_name: string | null;
   request: ApprovalRequest | null;
+  /**
+   * Whether YOU may decide the current step, right now.
+   *
+   * Answered by the server rather than by checking whether this request appears
+   * in the awaiting-me queue, which made a screen about one invoice depend on
+   * fetching the whole queue to resolve a boolean.
+   */
+  can_decide: boolean;
 }
 
 /** One row in the "Awaiting you" queue. */

@@ -5,6 +5,8 @@ import { useState } from "react";
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonList } from "@/components/ui/Skeleton";
 import {
   useApprovalChains,
   useDeleteChain,
@@ -52,7 +54,7 @@ export function ApprovalsPanel() {
   const people = (users.data?.items ?? []).filter((person) => person.is_active);
 
   if (chains.isLoading) {
-    return <p className="text-sm text-slate-600 dark:text-slate-400">Loading…</p>;
+    return <SkeletonList rows={1} label="Loading approval chains" />;
   }
 
   if (chains.isError) {
@@ -68,6 +70,15 @@ export function ApprovalsPanel() {
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end">
+        <RefreshButton
+          onRefresh={() => void chains.refetch()}
+          refreshing={chains.isFetching}
+          what="approval chains"
+          size="sm"
+        />
+      </div>
+
       {active ? (
         <Alert variant="success">
           <span className="font-medium">{active.name}</span> is gating vendor

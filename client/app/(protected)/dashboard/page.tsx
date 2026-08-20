@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { StatCard } from "@/components/ui/StatCard";
 import { TabPanel, Tabs, type TabItem } from "@/components/ui/Tabs";
 import { useAuth, useLogout, useLogoutAll } from "@/hooks/auth/useAuth.hooks";
+import { RefreshButton } from "@/components/ui/RefreshButton";
 import { useCompany } from "@/hooks/company/useCompany.hooks";
 import { useMyInvoiceStats } from "@/hooks/invoice/useInvoices.hooks";
 import { ROLE_LABEL, isAdmin } from "@/lib/auth/roles";
@@ -26,7 +27,8 @@ export default function DashboardPage() {
   // Cached, so switching tabs does not refetch. The upload mutation invalidates
   // the `invoices` key, which is what makes the counts update after an upload
   // without any manual wiring here.
-  const { data: stats } = useMyInvoiceStats();
+  const statsQuery = useMyInvoiceStats();
+  const { data: stats } = statsQuery;
 
   const logout = useLogout();
   const logoutAll = useLogoutAll();
@@ -55,9 +57,19 @@ export default function DashboardPage() {
             {company.data ? `${company.data.name} · ${user.email}` : user.email}
           </p>
         </div>
-        <Badge tone={user.role === "manager" ? "warning" : "neutral"}>
-          {ROLE_LABEL[user.role]}
-        </Badge>
+        <div className="flex items-center gap-3">
+          {/* The counts move when the server finishes reading an upload, which
+              is not an event this screen causes. */}
+          <RefreshButton
+            onRefresh={() => void statsQuery.refetch()}
+            refreshing={statsQuery.isFetching}
+            what="your figures"
+            size="sm"
+          />
+          <Badge tone={user.role === "manager" ? "warning" : "neutral"}>
+            {ROLE_LABEL[user.role]}
+          </Badge>
+        </div>
       </header>
 
       {isAdmin(user) && (

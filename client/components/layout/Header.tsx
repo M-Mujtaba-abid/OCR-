@@ -35,8 +35,13 @@ export function Header() {
   // Disabled rather than skipped for the platform owner and the signed-out —
   // they belong to no company, so the endpoint has none to scope by and
   // answers 403.
+  // Two minutes, not thirty seconds. This is mounted on every page for every
+  // user, most of whom are on no chain at all, and a badge that is two minutes
+  // stale costs nothing — the notification bell is what tells somebody it is
+  // their turn. Opening the Approvals page pulls the shared interval down.
   const awaiting = useAwaitingMe(
     isAuthenticated && !!user && !isPlatformOwner(user),
+    120_000,
   );
   const awaitingCount = awaiting.data?.length ?? 0;
 

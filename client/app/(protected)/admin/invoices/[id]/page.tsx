@@ -11,6 +11,12 @@ import { InvoiceStatusBadge } from "@/components/invoices/InvoiceStatusBadge";
 import { MatchCandidates } from "@/components/invoices/MatchCandidates";
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import {
+  Skeleton,
+  SkeletonList,
+  SkeletonText,
+} from "@/components/ui/Skeleton";
 import { useAuth } from "@/hooks/auth/useAuth.hooks";
 import {
   useConfirmMatch,
@@ -94,7 +100,8 @@ function taxPerLine(lines: InvoiceLine[], invoiceTax: number | null): LineTax[] 
 export default function InvoiceReviewPage() {
   const { id } = useParams<{ id: string }>();
   const { can } = useAuth();
-  const { data: invoice, isLoading, isError } = useInvoice(id);
+  const { data: invoice, isLoading, isError, isFetching, refetch } =
+    useInvoice(id);
 
   const openFile = useOpenInvoiceFile();
   const runOcr = useRunOcr();
@@ -105,11 +112,39 @@ export default function InvoiceReviewPage() {
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState("");
 
+  // Shaped like the page that is coming — a header, the document panel, and
+  // the sections under it — so the layout does not jump when it lands.
   if (isLoading) {
-    return <p className="text-sm text-slate-600 dark:text-slate-400">Loading…</p>;
+    return (
+      <div className="space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="w-1/2 space-y-2">
+            <Skeleton className="h-6 w-2/3" />
+            <Skeleton className="h-3 w-1/2" />
+          </div>
+          <Skeleton className="h-6 w-28" />
+        </div>
+        <div className="rounded-xl border border-slate-200 p-6 dark:border-slate-800">
+          <SkeletonText lines={4} label="Loading invoice" />
+        </div>
+        <SkeletonList rows={2} label="Loading invoice sections" />
+      </div>
+    );
   }
   if (isError || !invoice) {
-    return <Alert>That invoice could not be loaded.</Alert>;
+    return (
+      <div className="space-y-3">
+        <Alert>That invoice could not be loaded.</Alert>
+        {/* A dead end otherwise: the only way back was the browser's own
+            reload, which throws away every other cached query on the way. */}
+        <RefreshButton
+          onRefresh={() => void refetch()}
+          refreshing={isFetching}
+          label="Try again"
+          what="this invoice"
+        />
+      </div>
+    );
   }
 
   const extracted = invoice.extracted_json;
@@ -166,6 +201,18 @@ export default function InvoiceReviewPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           <InvoiceStatusBadge status={invoice.status} />
+          {/* Polls itself only while the SERVER is working (TRANSIENT_STATUSES).
+              Once it is waiting on a person — review, or an approval step — the
+              only thing that moves it is somebody else acting, and this is how
+              you find out without reloading the page. */}
+          {!working && (
+            <RefreshButton
+              onRefresh={() => void refetch()}
+              refreshing={isFetching}
+              what="this invoice"
+              size="sm"
+            />
+          )}
           {working && (
             <span
               aria-hidden="true"

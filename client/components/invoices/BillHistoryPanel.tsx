@@ -5,6 +5,8 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonTable } from "@/components/ui/Skeleton";
 import { useBillHistory } from "@/hooks/invoice/useInvoices.hooks";
 import { PAGE_SIZE } from "@/lib/env";
 import { money } from "@/lib/format";
@@ -73,17 +75,15 @@ export function BillHistoryPanel() {
             Raised in Odoo as drafts. Each one still needs posting there.
           </p>
         </div>
-        <Button
-          variant="ghost"
-          onClick={() => void query.refetch()}
-          disabled={query.isFetching}
-        >
-          {query.isFetching ? "Refreshing…" : "Refresh"}
-        </Button>
+        <RefreshButton
+          onRefresh={() => void query.refetch()}
+          refreshing={query.isFetching}
+          what="bill history"
+        />
       </div>
 
       {query.isLoading ? (
-        <p className="p-6 text-sm text-slate-600 dark:text-slate-400">Loading…</p>
+        <SkeletonTable rows={5} columns={5} label="Loading bill history" />
       ) : query.isError ? (
         <p className="p-6 text-sm text-red-700 dark:text-red-400">
           The bill history could not be loaded.

@@ -200,6 +200,16 @@ class InvoiceApprovalRead(BaseModel):
     #: The latest request, whatever became of it. Null if never sent.
     request: ApprovalRequestRead | None = None
 
+    #: Whether the caller may decide the current step, right now.
+    #:
+    #: Answered here rather than by the client checking whether this request
+    #: appears in `/approvals/awaiting-me`. That worked, but it made a screen
+    #: about ONE invoice depend on fetching the whole queue to resolve a
+    #: boolean — and it re-implemented nothing, but it did re-import the
+    #: consequences of the three rules in `may_decide` by proxy. One request,
+    #: one answer, decided where the rules live.
+    can_decide: bool = False
+
 
 class AwaitingItem(BaseModel):
     """One row in the "Awaiting you" queue.

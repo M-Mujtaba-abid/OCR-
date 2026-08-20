@@ -8,6 +8,8 @@ import { z } from "zod";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { RefreshButton } from "@/components/ui/RefreshButton";
+import { SkeletonPanel } from "@/components/ui/Skeleton";
 import {
   useDeleteOdoo,
   useDisableOdoo,
@@ -93,7 +95,7 @@ export function OdooPanel() {
   if (status.isLoading) {
     return (
       <Panel>
-        <p className="text-sm text-slate-600 dark:text-slate-400">Loading…</p>
+        <SkeletonPanel lines={4} label="Loading Odoo connection" />
       </Panel>
     );
   }
@@ -104,6 +106,15 @@ export function OdooPanel() {
         <p className="text-sm text-red-700 dark:text-red-400">
           The Odoo settings could not be loaded.
         </p>
+        <div className="mt-3">
+          <RefreshButton
+            onRefresh={() => void status.refetch()}
+            refreshing={status.isFetching}
+            label="Try again"
+            what="the Odoo settings"
+            size="sm"
+          />
+        </div>
       </Panel>
     );
   }
@@ -139,7 +150,17 @@ export function OdooPanel() {
             its vendor bills are created.
           </p>
         </div>
-        <ConnectionBadge status={data} />
+        <div className="flex items-center gap-3">
+          {/* Whether Odoo answers is a fact about a system outside this one:
+              credentials get rotated there, and the box goes down there. */}
+          <RefreshButton
+            onRefresh={() => void status.refetch()}
+            refreshing={status.isFetching}
+            what="the connection status"
+            size="sm"
+          />
+          <ConnectionBadge status={data} />
+        </div>
       </div>
 
       {!data.encryption_available && (

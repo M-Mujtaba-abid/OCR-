@@ -609,6 +609,74 @@ class TestInvoiceApprovalRead:
         assert after.json()["data"]["chain_active"] is True
         assert after.json()["data"]["chain_name"] is not None
 
+    async def test_it_answers_whether_you_may_decide_right_now(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        existing_user: User,
+        password: str,
+    ) -> None:
+        """Answered here so a screen about ONE invoice does not have to fetch
+        the whole awaiting queue to resolve a boolean.
+
+        Both approvers here hold `invoice.review`, because this endpoint sits
+        behind it — it feeds the review screen, which starts at manager. A member
+        on a chain never reaches either; they decide from /approvals, which is
+        open to every company account precisely because a chain can name anybody.
+        """
+        admin_headers = await _token(client, admin_user, password)
+        await _make_chain(
+            client,
+            admin_headers,
+            [("Receiving", [manager_user]), ("Admin", [admin_user])],
+        )
+        invoice = await _invoice(db, manager_user)
+        # Asked for by somebody who is on neither rung, so the two answers below
+        # are about the STEP and not about the self-approval rule.
+        request = await _start(db, invoice, existing_user)
+
+        # Step 1 belongs to the manager, so the admin may not decide yet even
+        # though they are on the chain.
+        theirs = await client.get(
+            f"{INVOICES}/{invoice.id}/approval", headers=admin_headers
+        )
+        assert theirs.json()["data"]["can_decide"] is False
+
+        manager_headers = await _token(client, manager_user, password)
+        mine = await client.get(
+            f"{INVOICES}/{invoice.id}/approval", headers=manager_headers
+        )
+        assert mine.json()["data"]["can_decide"] is True
+
+        # And it moves with the chain.
+        await _decide(client, manager_headers, request.id, approve=True)
+        after = await client.get(
+            f"{INVOICES}/{invoice.id}/approval", headers=admin_headers
+        )
+        assert after.json()["data"]["can_decide"] is True
+
+    async def test_a_closed_request_can_never_be_decided(
+        self,
+        client: AsyncClient,
+        db: AsyncSession,
+        admin_user: User,
+        manager_user: User,
+        password: str,
+    ) -> None:
+        headers = await _token(client, admin_user, password)
+        await _make_chain(client, headers, [("Admin", [admin_user])])
+        invoice = await _invoice(db, manager_user)
+        request = await _start(db, invoice, manager_user)
+        await _decide(client, headers, request.id, approve=True)
+
+        response = await client.get(
+            f"{INVOICES}/{invoice.id}/approval", headers=headers
+        )
+        assert response.json()["data"]["request"]["status"] == "approved"
+        assert response.json()["data"]["can_decide"] is False
+
     async def test_a_declined_request_is_still_what_it_reports(
         self,
         client: AsyncClient,
