@@ -10,6 +10,7 @@
     { "source": "/(.*)", "destination": "/api/index" }
   ],
   "crons": [
-    { "path": "/internal/cron/sweep", "schedule": "*/5 * * * *" }
+    { "path": "/internal/cron/sweep", "schedule": "*/5 * * * *" },
+    { "path": "/internal/cron/cleanup", "schedule": "0 3 * * *" }
   ]
 }

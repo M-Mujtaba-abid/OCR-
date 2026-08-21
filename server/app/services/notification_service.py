@@ -8,6 +8,7 @@ notification at all.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,3 +132,21 @@ class NotificationService:
         marked = await self.notifications.mark_all_read(user_id)
         await self.db.commit()
         return marked
+
+    async def purge_read(self, *, older_than_days: int) -> int:
+        """Drop read notifications past their retention window. Returns the count.
+
+        Commits, unlike everything on the write path above. Those deliberately
+        join the caller's transaction so a notification and the state change it
+        announces land together; this one has no caller transaction to join —
+        it is started by the scheduler, and it is the whole unit of work.
+        """
+        cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=older_than_days)
+        removed = await self.notifications.delete_read_before(cutoff)
+        await self.db.commit()
+        if removed:
+            logger.info(
+                "notifications.purged",
+                extra={"removed": removed, "older_than_days": older_than_days},
+            )
+        return removed

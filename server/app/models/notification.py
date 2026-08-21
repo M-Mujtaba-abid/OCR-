@@ -19,6 +19,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    desc,
     String,
     Text,
     func,
@@ -66,7 +67,15 @@ class Notification(UUIDPrimaryKeyMixin, CompanyScopedMixin, Base):
         # The hot path — "unread for this user" — is served entirely by this
         # composite index without touching the table.
         Index("ix_notif_user_unread", "user_id", "is_read"),
+        # The OTHER hot path, which had no index that fitted it: the bell's list
+        # is `WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, and the two
+        # indexes above and below serve one half each — so Postgres filtered on
+        # one and then sorted. Leading column filters, second orders, LIMIT stops
+        # the scan.
+        Index("ix_notif_user_created", "user_id", desc("created_at")),
         Index("ix_notif_match_history", "match_history_id"),
+        # Earns its place through the retention delete, which selects purely by
+        # age across every user.
         Index("ix_notif_created", "created_at"),
         Index("ix_notifications_company_id", "company_id"),
     )

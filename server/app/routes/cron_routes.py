@@ -28,6 +28,7 @@ from app.models.match_history import InvoiceStatus
 from app.repositories.approval_repository import ApprovalRepository
 from app.repositories.match_history_repository import MatchHistoryRepository
 from app.services.approval_service import nudge_overdue_approval
+from app.services.notification_service import NotificationService
 from app.services.invoice_service import InvoiceService
 from app.services.match_service import run_matching_for_invoice
 from app.services.ocr_service import run_ocr_for_invoice
@@ -151,4 +152,47 @@ async def sweep(
             "examined": len(stuck),
             "approvals_nudged": len(overdue),
         }
+    )
+
+
+@router.get(
+    "/cleanup",
+    response_model=ApiResponse[dict[str, int]],
+    summary="Delete read notifications past their retention window",
+    include_in_schema=False,
+)
+async def cleanup(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> ApiResponse[dict[str, int]]:
+    """Housekeeping. Nothing here reads a row — it only removes them by age.
+
+    Its own endpoint rather than another branch of `/sweep`, and on its own
+    schedule. The sweep runs every five minutes because a stalled invoice is
+    somebody waiting; a DELETE that scans by age has no business running 288
+    times a day to find nothing.
+
+    Cross-company, like the sweep, because a scheduler has no company to scope
+    to — and safe for a stronger reason than the sweep's. The sweep's argument
+    is that it reads nothing company-SPECIFIC; this one reads nothing at all.
+    Age and read-state are the entire predicate, and no company's rows can be
+    exposed to another by a statement that returns none.
+
+    Notifications are the only thing removed. What actually happened is on the
+    invoice, the approval request and its decisions; this table is the nudge
+    that pointed at them.
+    """
+    _authorise(authorization)
+
+    removed = await NotificationService(db).purge_read(
+        older_than_days=settings.NOTIFICATION_RETENTION_DAYS
+    )
+    if removed:
+        logger.info(
+            "Cron cleanup removed %d read notification(s) older than %d days",
+            removed,
+            settings.NOTIFICATION_RETENTION_DAYS,
+        )
+    return ApiResponse.ok(
+        {"removed": removed, "retention_days": settings.NOTIFICATION_RETENTION_DAYS}
     )

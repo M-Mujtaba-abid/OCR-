@@ -1,4 +1,3 @@
-import type { ListNotificationsParams } from "@/service/notificationService/notification.service";
 import type { ListUsersParams } from "@/service/userService/user.service";
 import type { BillHistoryParams, InvoiceListParams } from "@/types/invoice.type";
 
@@ -134,15 +133,18 @@ export const queryKeys = {
   notifications: {
     all: ["notifications"] as const,
     /**
-     * Just the pages of rows.
+     * The bell's scrolling feed. An INFINITE query, so what is cached here is
+     * `{ pages: Paginated[], pageParams }` — not a single page.
      *
-     * Separate from `all`, which also matches `unread` — and that one caches a
-     * bare `{ count }`, not a page. Writing a page-shaped update across `all`
-     * hands the updater the count object and dies on its missing `items`.
+     * Its own branch rather than living under a shared `list` key, and the shape
+     * is exactly why. `all` also matches `unread`, which caches a bare
+     * `{ count }`; a writer that maps over `.items` dies on that, and a writer
+     * that maps over `.pages` dies on both. Each branch has one shape, so every
+     * updater knows what it is holding.
      */
-    lists: ["notifications", "list"] as const,
-    list: (params: ListNotificationsParams = {}) =>
-      [...queryKeys.notifications.lists, params] as const,
+    feeds: ["notifications", "feed"] as const,
+    feed: (pageSize: number) =>
+      [...queryKeys.notifications.feeds, pageSize] as const,
     unread: [...(["notifications"] as const), "unread"] as const,
   },
 } as const;

@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "react-hot-toast";
 
+import { NOTIFICATION_POLL_MS } from "@/lib/env";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/service/api";
 import { approvalService } from "@/service/approvalService/approval.service";
@@ -125,7 +126,10 @@ export function useDeleteChain() {
  * else acted, so there is no local event to invalidate on. The same reasoning —
  * and the same interval — as the notification bell.
  */
-export function useAwaitingMe(enabled = true, intervalMs = 30_000) {
+export function useAwaitingMe(
+  enabled = true,
+  intervalMs = NOTIFICATION_POLL_MS,
+) {
   return useQuery({
     queryKey: queryKeys.approvals.awaiting,
     queryFn: () => approvalService.awaitingMe(),
@@ -141,6 +145,11 @@ export function useAwaitingMe(enabled = true, intervalMs = 30_000) {
     // Off deliberately, matching the bell: a background tab should not keep
     // polling a queue nobody is looking at.
     refetchIntervalInBackground: false,
+    // And on for the same reason the bell has it: this list only ever changes
+    // because somebody else acted, so the instant a person looks at the tab
+    // again is the instant a stale answer is most obvious. Still bounded by
+    // staleTime, so a quick alt-tab costs nothing.
+    refetchOnWindowFocus: true,
   });
 }
 

@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import Notification, NotificationType
@@ -114,5 +114,30 @@ class NotificationRepository:
                 Notification.is_read.is_(False),
             )
             .values(is_read=True, read_at=dt.datetime.now(dt.UTC))
+        )
+        return int((await self.db.execute(stmt)).rowcount or 0)
+
+    async def delete_read_before(self, cutoff: dt.datetime) -> int:
+        """Delete notifications that have been READ and are older than `cutoff`.
+
+        Read-state is half the condition, and the important half. A notification
+        somebody has already seen has done its whole job — the record of what
+        happened lives on the invoice and the approval request, not here — so
+        removing it loses nothing. One nobody has opened is the one deletion a
+        person cannot recover from, because they never learned it existed.
+
+        That does leave ignored notifications unbounded, and that is a
+        deliberate trade rather than an oversight: the unread count is indexed
+        on `(user_id, is_read)` precisely so a large one stays cheap to answer.
+
+        Deliberately NOT company-scoped. It is called by the scheduler, which
+        has no company to scope to, and it is safe for a stronger reason than
+        the invoice sweep's: it reads nothing at all. Age and read-state are the
+        entire predicate. Adding a column to this WHERE would break that
+        argument — do not.
+        """
+        stmt = delete(Notification).where(
+            Notification.is_read.is_(True),
+            Notification.created_at < cutoff,
         )
         return int((await self.db.execute(stmt)).rowcount or 0)

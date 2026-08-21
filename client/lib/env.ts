@@ -54,6 +54,24 @@ export const DIRECT_UPLOAD = process.env.NEXT_PUBLIC_DIRECT_UPLOAD !== "false";
  */
 export const POLL_MS = int(process.env.NEXT_PUBLIC_POLL_MS, 3000);
 
+/**
+ * How often the notification badge and the approvals queue check for work
+ * somebody else created.
+ *
+ * A different number from POLL_MS and a different job. That one tracks work
+ * THIS browser started and stops the moment it finishes; this one never stops,
+ * because the events it reports are other people's — so it is measured in tens
+ * of seconds rather than seconds, and every open tab pays it.
+ *
+ * Tunable because the right value is a deployment decision, not a code one: it
+ * trades serverless invocations against how long a badge can be wrong. Raise it
+ * on a large team, lower it on a small busy one.
+ */
+export const NOTIFICATION_POLL_MS = int(
+  process.env.NEXT_PUBLIC_NOTIFICATION_POLL_MS,
+  30_000,
+);
+
 /** Rows per page in the invoice and user tables. */
 export const PAGE_SIZE = int(process.env.NEXT_PUBLIC_PAGE_SIZE, 10);
 

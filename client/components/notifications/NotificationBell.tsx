@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import {
+  FEED_PAGE_SIZE,
+  flattenFeed,
   useMarkAllNotificationsRead,
   useMarkNotificationRead,
-  useNotifications,
+  useNotificationFeed,
   useUnreadCount,
 } from "@/hooks/notification/useNotifications.hooks";
 import { RefreshButton } from "@/components/ui/RefreshButton";
@@ -32,11 +34,13 @@ export function NotificationBell({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
   const { data: unread } = useUnreadCount(isAuthenticated);
-  // Fetched only while the panel is open: the list is a page of rows nobody is
-  // looking at the rest of the time, and the count alone drives the badge.
-  const list = useNotifications({ pageSize: 12 }, open);
+  // Fetched only while the panel is open: the feed is rows nobody is looking at
+  // the rest of the time, and the count alone drives the badge.
+  const feed = useNotificationFeed(open);
   const markAll = useMarkAllNotificationsRead();
 
   const count = unread?.count ?? 0;
@@ -64,7 +68,45 @@ export function NotificationBell({ className }: { className?: string }) {
     };
   }, [open]);
 
-  const items = list.data?.items ?? [];
+  const items = flattenFeed(feed.data);
+
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = feed;
+
+  /**
+   * Load the next page as the reader APPROACHES the end, not when they hit it.
+   *
+   * `rootMargin` is what makes it "approaches": the observer treats the sentinel
+   * as visible while it is still 160px below the fold, so the request is already
+   * in flight by the time those rows would be needed. Waiting for the sentinel
+   * to actually appear would show the reader a spinner at the bottom of every
+   * page — which is the thing infinite scroll exists to avoid.
+   *
+   * `root` is the dropdown, not the viewport. The list scrolls inside a fixed
+   * 22rem box, so against the default root the sentinel is either always visible
+   * or never — and "always" means it fetches every page at once.
+   */
+  const attachSentinel = useCallback(
+    (node: HTMLDivElement | null) => {
+      observerRef.current?.disconnect();
+      if (!node || !scrollRef.current || !hasNextPage) return;
+
+      observerRef.current = new IntersectionObserver(
+        (entries) => {
+          if (entries[0]?.isIntersecting) void fetchNextPage();
+        },
+        { root: scrollRef.current, rootMargin: "160px" },
+      );
+      observerRef.current.observe(node);
+    },
+    // A callback ref rather than an effect, because the node it watches is
+    // mounted and unmounted with the dropdown. An effect would have to guard
+    // against a ref that is null on the render it runs after.
+    [fetchNextPage, hasNextPage],
+  );
+
+  // Disconnect when the dropdown closes; the callback ref only fires on mount
+  // and unmount of the sentinel, and a closed panel unmounts it either way.
+  useEffect(() => () => observerRef.current?.disconnect(), []);
 
   return (
     <div ref={containerRef} className={`relative ${className ?? ""}`}>
@@ -97,8 +139,8 @@ export function NotificationBell({ className }: { className?: string }) {
               Notifications
             </h2>
             <RefreshButton
-              onRefresh={() => void list.refetch()}
-              refreshing={list.isFetching}
+              onRefresh={() => void feed.refetch()}
+              refreshing={feed.isFetching}
               what="notifications"
               size="sm"
               className="ml-auto"
@@ -115,8 +157,8 @@ export function NotificationBell({ className }: { className?: string }) {
             )}
           </div>
 
-          <div className="max-h-[22rem] overflow-y-auto">
-            {list.isLoading && (
+          <div ref={scrollRef} className="max-h-[22rem] overflow-y-auto">
+            {feed.isLoading && (
               <div className="space-y-3 px-4 py-4">
                 {[0, 1, 2].map((row) => (
                   <div key={row} className="flex gap-3">
@@ -130,7 +172,7 @@ export function NotificationBell({ className }: { className?: string }) {
                 <span className="sr-only">Loading notifications</span>
               </div>
             )}
-            {!list.isLoading && items.length === 0 && (
+            {!feed.isLoading && items.length === 0 && (
               <p className="px-4 py-6 text-sm text-slate-600 dark:text-slate-400">
                 Nothing yet. Uploads, matches and failures show up here.
               </p>
@@ -152,6 +194,33 @@ export function NotificationBell({ className }: { className?: string }) {
                 />
               ))}
             </ul>
+
+            {/* Zero-height and invisible. It exists to be scrolled towards. */}
+            {hasNextPage && <div ref={attachSentinel} aria-hidden="true" />}
+
+            {isFetchingNextPage && (
+              <div className="space-y-3 px-4 py-3">
+                {[0, 1].map((row) => (
+                  <div key={row} className="flex gap-3">
+                    <Skeleton className="mt-1.5 size-2 shrink-0 rounded-full" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-3 w-3/4" />
+                      <Skeleton className="h-2.5 w-1/2" />
+                    </div>
+                  </div>
+                ))}
+                <span className="sr-only">Loading more notifications</span>
+              </div>
+            )}
+
+            {/* Only once there is enough to have scrolled through. Saying "that
+                is everything" under four rows is noise; saying nothing after
+                forty leaves the reader wondering whether it is still loading. */}
+            {!hasNextPage && items.length > FEED_PAGE_SIZE && (
+              <p className="px-4 py-3 text-center text-xs text-slate-400 dark:text-slate-600">
+                That is everything.
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -256,6 +325,11 @@ function NotificationRow({
       <li>
         <Link
           href={href}
+          // Off deliberately, and it matters more now the feed is infinite.
+          // Next prefetches every Link in the viewport, so a reader scrolling
+          // through sixty notifications would prefetch sixty invoice routes —
+          // each a dynamic, server-rendered page — to open at most one of them.
+          prefetch={false}
           onClick={() => {
             read();
             onNavigate();

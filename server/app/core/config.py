@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # merely slow gets restarted underneath itself.
     STUCK_AFTER_MINUTES: int = Field(default=10, ge=2, le=1440)
 
+    # How long a READ notification is kept before the nightly cleanup removes
+    # it. Unread ones are never deleted by age — see
+    # `NotificationRepository.delete_read_before`.
+    #
+    # Days rather than a row cap: what makes an old notification worthless is
+    # that the thing it announced has been dealt with, and that is a matter of
+    # time rather than of how many arrived after it.
+    NOTIFICATION_RETENTION_DAYS: int = Field(default=90, ge=7, le=3650)
+
     # How long one rung of an approval chain may sit undecided before the sweep
     # nudges whoever it is waiting on, and how often it repeats. Hours rather
     # than minutes because the thing being measured is a person reading their
