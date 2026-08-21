@@ -37,3 +37,33 @@ body {
     transform: translateY(0) scale(1);
   }
 }
+
+/* The auth loader's centre dot. A slow breath rather than a pulse: the loader
+   already has two rotating arcs, and a third fast-moving element reads as
+   agitation instead of progress. Applied via `motion-safe:` like the toast. */
+@keyframes loader-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* The halo behind it, offset from the dot's rhythm so the two never peak
+   together — which is what would make the whole thing look like it is
+   throbbing rather than turning. */
+@keyframes loader-halo {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.08);
+  }
+}
